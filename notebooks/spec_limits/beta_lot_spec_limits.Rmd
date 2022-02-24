@@ -1,0 +1,926 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+## Introduction   
+
+This notebook takes in all the standards from the beta lot and constructs red line specs around metrics of interest.  
+
+Prior to this, we downloaded the data for standards and controls from GCP  located here gs://inhouse-xmap-data/data_frames/standards_and_controls.csv 
+
+Rashmi has indicated in red in the protein ingestion tracker sheet which batches had some assignable causes due to which that batch is unusable  
+
+```{r}
+library(tidyverse)
+library(tolerance)
+freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
+                   '#FECDD1')
+```
+
+## Data   
+
+**Read in data**   
+
+```{r}
+all_data <- readr::read_csv(here::here("data", "raw", "standards_and_controls.csv"), 
+                            show_col_types = FALSE) %>% 
+  janitor::clean_names()
+```
+
+```{r}
+skimr::skim(all_data)
+```
+
+
+From the protein ingestion tracker, we know that the lot # for beta lot are  
+1641339 and 1641338  
+
+Of these, there's one batch `20211028_Reproducibility_Panel2_Plate3` that is unusable - we observed very high bead loss on this batch and therefore will not use this experiment.  
+
+**Data filtering**   
+
+```{r}
+reference_data <- all_data %>% 
+  mutate(batch = str_remove(file_name, "_[0-9]+.csv")) %>% 
+  filter(lot_number == "1641339" | lot_number == "1641338") %>% 
+  filter(!grepl("20211028_Reproducibilit_Panel2_Plate3", file_name))
+
+all_data %>% 
+  mutate(batch = str_remove(file_name, "_[0-9]+.csv")) %>% 
+  filter(lot_number == "1641339" | lot_number == "1641338") %>% 
+  filter(!grepl("20211028_Reproducibilit_Panel2_Plate3", file_name)) %>% 
+  count(file_name)
+```
+
+This is the data we used  
+
+```{r}
+reference_data %>% 
+  count(batch)
+
+reference_data %>% 
+  filter(file_name == "20211117_PltStd_ProdLot_Panel1_B1_20211118_121559.csv" | 
+           file_name == "20211117_PltStd_ProdLot_Panel1_B2_20211118_124710.csv") %>% 
+  filter(assay == "AFP") %>% 
+  filter(xponent_id == "Standard1")
+```
+**Standards data**  
+
+```{r}
+std_data <- reference_data %>% 
+  filter(sample_type == "standard")
+```
+
+
+
+
+
+
+### MFI spec limits   
+
+We generate 99 % tolerance intervals for MFI   
+
+```{r}
+list_of_proteins <- std_data %>% select(assay) %>% pull() %>% unique()
+
+tolerance_intervals_mfi <- function(std = "NULL", protein = "NULL", df = NULL){
+  df %>% 
+    filter(assay == protein) %>% 
+    filter(xponent_id == paste0("Standard", std)) %>% 
+    pull(median_mfi) %>% 
+    tolerance::normtol.int(., method = "EXACT", side = 2, m = 500, 
+                           log.norm = FALSE, P = 0.99) %>% 
+    janitor::clean_names() %>% 
+    mutate(assay = protein, xponent_id = paste0("Standard", std)) %>% 
+    return()
+
+}
+
+tol_stds <- function(std = "NULL") {
+  map_dfr(list_of_proteins, ~ tolerance_intervals_mfi(std = std, protein = .x, df = std_data))
+}
+
+
+
+tol_stds_df <- map_dfr(c("1", "2", "3", "4", "5", "6"), ~ tol_stds(std = .x))
+```
+
+#### MFI Plots    
+
+```{r}
+tol_stds_df %>% 
+  filter(xponent_id == "Standard1") %>% 
+  ggplot(.,aes(assay, x_bar)) + 
+  geom_errorbar(aes(ymin = x2_sided_lower, ymax = x2_sided_upper), 
+                color = freenome_colors[1]) + 
+  theme_classic() + 
+  labs(title = "99 % Tolerance Limits for Standard 1", 
+       y = "MFI") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+tol_stds_df %>% 
+  ggplot(.,aes(xponent_id, x_bar)) + 
+  geom_errorbar(aes(ymin = x2_sided_lower, ymax = x2_sided_upper), 
+                color = freenome_colors[1]) + 
+  theme_classic() + 
+  labs(title = "95 % Tolerance Limits for Standard 1", 
+       y = "MFI") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  facet_wrap(vars(assay)) + 
+  scale_y_log10()
+
+tol_stds_df %>% 
+  ggplot(.,aes(xponent_id, x_bar)) + 
+  geom_errorbar(aes(ymin = x2_sided_lower, ymax = x2_sided_upper), 
+                color = freenome_colors[1]) + 
+  theme_classic() + 
+  labs(title = "95 % Tolerance Limits", 
+       y = "MFI") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  facet_wrap(vars(assay)) 
+
+```
+
+
+
+**Write CSV**   
+
+```{r}
+tol_stds_df %>% 
+  select(x_bar, x2_sided_lower, x2_sided_upper, assay, xponent_id) %>% 
+  rename(average_mfi = x_bar, 
+         upper_limit = x2_sided_upper, 
+         lower_limit = x2_sided_lower, 
+         standard = xponent_id) %>% 
+  write_csv(here::here("data", "processed", "beta_lot_spec_limits", "provisional_spec_limits-MFI.csv"))
+```
+
+
+
+### Expected Recovery   
+
+```{r}
+tolerance_intervals_recovery <- function(std = "NULL", protein = "NULL", df = NULL){
+  df %>% 
+    filter(assay == protein) %>% 
+    filter(xponent_id == paste0("Standard", std)) %>% 
+    filter(!is.na(pct_recovery)) %>% 
+    pull(pct_recovery) %>% 
+    tolerance::normtol.int(., method = "EXACT", side = 2, m = 500, 
+                           log.norm = FALSE, P = 0.95) %>% 
+    janitor::clean_names() %>% 
+    mutate(assay = protein, xponent_id = paste0("Standard", std)) %>% 
+    return()
+
+}
+
+recovery_stds <- function(std = "NULL") {
+  map_dfr(list_of_proteins, ~ tolerance_intervals_recovery(std = std, protein = .x, 
+                                                           df = std_data))
+}
+
+
+
+recovery_stds_df <- map_dfr(c("1", "2", "3", "4", "5", "6"), ~ recovery_stds(std = .x))
+```
+
+**Write CSV**   
+
+
+```{r}
+recovery_stds_df %>% 
+  mutate(x2_sided_lower = ifelse(x2_sided_lower < 0 , 0, x2_sided_lower)) %>% 
+  select(x_bar, x2_sided_lower, x2_sided_upper, assay, xponent_id) %>% 
+  rename(average_recovery = x_bar, 
+         upper_limit = x2_sided_upper, 
+         lower_limit = x2_sided_lower, 
+         standard = xponent_id) %>% 
+  write_csv(here::here("data", "processed", "beta_lot_spec_limits", 
+                       "provisional_spec_limits-pct-recovery.csv"))
+```
+
+#### Recovery Plots    
+
+Based on our time at temp study - there are 5 proteins that perform as well as a larger set of proteins. 
+1. TNC  
+2. IL1R2 
+3. WFDC2 
+4. CEACAM5  
+5. MUC-16  
+
+```{r}
+tentative_final <- c("TNC", "IL-1 R2", "CEA", "WFDC2", "MUC-16")
+
+recovery_stds_df %>% 
+  filter(assay %in% tentative_final) %>% 
+  rename(pct_recovery = x_bar, 
+         upper_limit = x2_sided_upper, 
+         lower_limit = x2_sided_lower, 
+         standard = xponent_id) %>% 
+  ggplot(.,aes(standard, pct_recovery)) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = lower_limit, ymax = upper_limit), width = 0.5) + 
+  facet_wrap(vars(assay)) + 
+  theme_classic() + 
+  labs(title = "Subset E (5 marker panel)") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  scale_y_continuous(breaks = seq(0, 250, by = 25))
+
+
+recovery_stds_df %>% 
+  mutate(x2_sided_lower = ifelse(x2_sided_lower < 0 , 0, x2_sided_lower)) %>% 
+  filter(!(assay %in% tentative_final)) %>% 
+  filter(assay != "CA15-3") %>% 
+  rename(pct_recovery = x_bar, 
+         upper_limit = x2_sided_upper, 
+         lower_limit = x2_sided_lower, 
+         standard = xponent_id) %>% 
+  ggplot(.,aes(standard, pct_recovery)) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = lower_limit, ymax = upper_limit), width = 0.5) + 
+  facet_wrap(vars(assay)) + 
+  theme_classic() + 
+  labs(title = "All - (Subset E + CA15-3)") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  scale_y_continuous(breaks = seq(0, 250, by = 50))
+
+recovery_stds_df %>% 
+  mutate(x2_sided_lower = ifelse(x2_sided_lower < 0 , 0, x2_sided_lower)) %>% 
+  #filter(!(assay %in% tentative_final)) %>% 
+  filter(assay == "CA15-3") %>% 
+  rename(pct_recovery = x_bar, 
+         upper_limit = x2_sided_upper, 
+         lower_limit = x2_sided_lower, 
+         standard = xponent_id) %>% 
+  ggplot(.,aes(standard, pct_recovery)) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = lower_limit, ymax = upper_limit), width = 0.5) + 
+  theme_classic() + 
+  labs(title = "CA15-3") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  scale_y_continuous(breaks = seq(0, 1400, by = 100))
+```
+
+
+
+
+
+
+### % Inter-CV   
+
+```{r}
+intra_cv_df <- std_data %>% 
+  filter(!is.na(pct_recovery)) %>% ## we do this because when pct recovery is NA - the concentration is truncated to the upper standard  
+  group_by(assay, xponent_id, batch) %>% 
+  summarise(intra_cv = 100*sd(calc_conc, na.rm = TRUE)/mean(calc_conc, na.rm = TRUE)) %>% 
+  ungroup() 
+  #group_by(assay, xponent_id) %>% 
+  #mutate(avg_intra_cv = mean(intra_cv, na.rm = TRUE)) %>% 
+  #distinct(avg_intra_cv, .keep_all = TRUE)
+
+
+
+
+inter_cv_df <- std_data %>% 
+  mutate(batch = str_remove(file_name, "_[0-9]+.csv")) %>% 
+  filter(!is.na(pct_recovery)) %>% ## we do this because when pct recovery is NA - the concentration is truncated to the upper standard  
+  group_by(assay, xponent_id, batch) %>% 
+  summarise(avg_calc_conc = mean(calc_conc)) %>% 
+  ungroup() %>% 
+  group_by(assay, xponent_id) %>% 
+  summarise(cv = 100*sd(avg_calc_conc, na.rm = TRUE)/mean(avg_calc_conc, 
+                                                          na.rm = TRUE)) %>% 
+  ungroup()
+```
+
+
+**tolerance limits**  
+
+```{r}
+tolerance_intervals_intra_cv <- function(std = "NULL", protein = "NULL", df = NULL){
+  df %>% 
+    filter(assay == protein) %>% 
+    filter(xponent_id == paste0("Standard", std)) %>% 
+    filter(!is.na(intra_cv)) %>% 
+    pull(intra_cv) %>% 
+    tolerance::normtol.int(., method = "EXACT", side = 2, m = 500, 
+                           log.norm = TRUE, P = 0.95) %>% 
+    janitor::clean_names() %>% 
+    mutate(assay = protein, xponent_id = paste0("Standard", std)) %>% 
+    return()
+
+}
+
+intra_cv_stds <- function(std = "NULL") {
+  map_dfr(list_of_proteins, ~ tolerance_intervals_intra_cv(std = std, protein = .x, df = intra_cv_df))
+}
+
+
+
+intra_cv_tolerance <- map_dfr(c("1", "2", "3", "4", "5", "6"), ~ intra_cv_stds(std = .x))
+
+
+intra_cv_tolerance %>% 
+  filter(assay %in% tentative_final) %>% 
+  ggplot(.,aes(xponent_id, x_bar)) + 
+  geom_point() + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  facet_wrap(vars(assay)) + 
+  labs(title = "Average Intra CV (Tier 1)")
+  
+intra_cv_tolerance %>% 
+  filter(!(assay %in% tentative_final)) %>% 
+  filter(assay != "CA15-3") %>% 
+  ggplot(.,aes(xponent_id, x_bar)) + 
+  geom_point() + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  facet_wrap(vars(assay)) + 
+  labs(title = "Intra CV (Tier 2)")
+
+
+####### How come the inter-CVs are so tight?  
+  std_data %>% 
+  mutate(batch = str_remove(file_name, "_[0-9]+.csv")) %>% 
+  filter(!is.na(pct_recovery)) %>% 
+  group_by(assay, xponent_id, batch) %>% 
+  summarise(avg_calc_conc = mean(calc_conc)) %>% 
+  ggplot(.,aes(xponent_id, avg_calc_conc, group = xponent_id)) + 
+    geom_boxplot() + 
+    geom_point() + facet_wrap(vars(assay)) + 
+    scale_y_log10()
+  
+```
+**Write csv tolerance intervals for intra-cv**   
+
+```{r}
+intra_cv_tolerance %>% 
+  select(-c(alpha, p)) %>% 
+  rename(average_intra_cv = x_bar, 
+         lower = x2_sided_lower, 
+         upper = x2_sided_upper) %>% 
+  write_csv(here::here("data", "processed", "beta_lot_spec_limits", "provisional_spec_limits-intra-cv.csv"))
+```
+
+```{r}
+inter_cv_df %>% 
+  write_csv(here::here("data", "processed", "beta_lot_spec_limits", "provisional_inter-cv.csv"))
+```
+
+
+
+
+```{r}
+intra_cv_df %>% 
+  filter(assay %in% tentative_final) %>% 
+  ggplot(.,aes(xponent_id, intra_cv)) + 
+  geom_point() + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  facet_wrap(vars(assay)) + 
+  labs(title = "Average Intra CV (Tier 1)")
+  
+inter_cv_df %>% 
+  filter(!(assay %in% tentative_final)) %>% 
+  filter(assay != "CA15-3") %>% 
+  ggplot(.,aes(xponent_id, cv)) + 
+  geom_point() + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  facet_wrap(vars(assay)) + 
+  labs(title = "Inter CV (Tier 1)")
+  
+```
+
+
+
+
+### Background   
+
+
+
+Need to define limits for background as well - use the code below in PATE-rnd to retreive all of the background data as well.  
+
+```
+pate-rnd xmap-collector --include_file_str 20211026_Reproducibility \
+  --include_file_str 20211026_Reproducibility_Panel1 \
+  --include_file_str 20211026_Reproducibility_Panel2 \
+  --include_file_str 20211103_PlatinumStd_Immuno_Panel1 \
+  --include_file_str 20211103_PlatinumStd_Immuno_Panel2 \
+  --include_file_str 20211104_BetaLot_Fullmethod_Test_Panel1 \
+  --include_file_str 20211104_BetaLot_Fullmethod_Test_Panel2 \
+  --include_file_str 20211104_BetaLot_Sullymethod_Test_Panel1 \
+  --include_file_str 20211104_BetaLot_Sullymethod_Test_Panel1 \
+  --include_file_str 20211109_PlatinumStd_PilotLot_Panel1 \
+  --include_file_str 20211109_PlatinumStd_PilotLot_Panel2 \
+  --include_file_str 20211117_PltStd_ProdLot_Panel1 \
+  --include_file_str 20211117_PltStd_ProdLot_Panel2 \
+  --include_file_str 20211118_Donor_Screening_Panel1 \
+  --include_file_str 20211118_Donor_Screening_Panel2 \
+  --include_file_str 20211122_PltStd_ProdLot_Panel1 \
+  --include_file_str 20211122_PltStd_ProdLot_Panel2 \
+  --include_file_str 20211129_PltStd_ProdLot_Panel1 \
+  --include_file_str 20211129_PltStd_ProdLot_Panel2 \
+  --include_file_str 20211202_Matrix_Interf_Beta_Panel1 \
+  --include_file_str 20211202_Matrix_Interf_Beta_Panel2 \
+  --include_file_str 20211206_Exogenous_Interf_Beta_Panel1 \
+  --include_file_str 20211206_Exogenous_Interf_Beta_Panel2 \
+  --include_file_str 20211206_Endogenous_Interf_Beta_Panel1 \
+  --include_file_str 20211206_Endogenous_Interf_Beta_Panel2 \
+  --include_file_str 20211209_Matrix_InterfPatch_Beta_Panel1 \
+  --include_file_str 20211209_Matrix_InterfPatch_Beta_Panel2 \
+  --include_file_str 20211214_ShakingCompare_Auto_Beta_Panel1 \ 
+  --include_file_str 20211214_ShakingCompare_Auto_Beta_Panel2 \
+  --include_file_str 20211214_ShakingCompare_Workcell_Beta_Panel1 \
+  --include_file_str 20211214_ShakingCompare_Workcell_Beta_Panel2 \
+  --include_sample_str Standard --include_sample_str Buffer --include_sample_str Background --ignore_case_sample \
+  --out_file_name beta_lot_standards_background.csv
+```
+
+
+
+```
+pate-rnd xmap-collector --include_file_str 20211026_Reproducibility \ 
+  --include_file_str 20211028_Reproducibility \       
+  --include_file_str  PlatinumStd \                   
+  --include_file_str  PltStd \                            
+  --include_file_str  BetaLot \                           
+  --include_file_str  20211118_Donor_Screening \              
+  --include_file_str  Interf_Beta \                           
+  --include_file_str  20211209_Matrix_InterfPatch_Beta \       
+  --include_file_str  20211214_ShakingCompare \                
+  --include_sample_str Standard --include_sample_str Buffer --include_sample_str Background --ignore_case_sample \
+  --out_file_name beta_lot_standards_background.csv 
+```
+  
+  
+  
+
+
+Copy to the relevant folder  
+
+```
+gsutil cp gs://inhouse-xmap-data/user_data_frames/beta_lot_standards_background.csv ~/beta-av-testing/data/raw/beta_lot_standards_background.csv
+```
+
+
+**read in data**  
+```{r}
+beta_lot_background <- read_csv(here::here("data", "raw", "beta_lot_standards_background.csv"), 
+                                show_col_types = FALSE)
+```
+
+```{r}
+beta_lot_background %>% 
+  count(file_name)
+```
+
+
+
+```{r}
+background_only <- beta_lot_background %>% 
+  filter(xponent_id == "Assay Buffer" | xponent_id == "Background0")
+```
+
+
+
+```{r}
+tolerance_intervals_background <- function(protein = "NULL", df = NULL){
+  df %>% 
+    filter(assay == protein) %>% 
+    filter(xponent_id == "Assay Buffer" | xponent_id == "Background0") %>% 
+    pull(median_mfi) %>% 
+    tolerance::normtol.int(., method = "EXACT", side = 2, m = 500, 
+                           log.norm = FALSE, P = 0.95) %>% 
+    janitor::clean_names() %>% 
+    mutate(assay = protein) %>% 
+    return()
+
+}
+
+background_spec_limits <- map_dfr(list_of_proteins, ~ tolerance_intervals_background(protein = .x, 
+                                                                                     df = beta_lot_background))
+```
+
+```{r}
+skimr::skim(background_spec_limits)
+```
+**Why are some of the proteins missing**  - TODO   
+
+
+
+Given the amount of data, tolerance intervals should converge to prediction intervals so we instead choose to use prediction intervals here. Still, we need to figure out why the tolerance intervals failed 
+
+```{r}
+tmp_mod <- beta_lot_background %>% 
+  filter(xponent_id == "Assay Buffer" | xponent_id == "Background0") %>% 
+  lm(median_mfi ~ assay, data = .)
+
+background_spec_limits_regression <- predict.lm(tmp_mod, newdata = data.frame(assay = list_of_proteins), 
+               interval = "prediction", level = 0.99) %>% 
+  as_tibble() %>% 
+  bind_cols(tibble(assay = list_of_proteins)) 
+```
+**Plots**   
+
+```{r}
+background_spec_limits %>% 
+  filter(assay %in% tentative_final) %>% 
+  rename(avg_background = fit, 
+         upper_limit = lwr, 
+         lower_limit = upr) %>% 
+  ggplot(.,aes(assay, avg_background)) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = lower_limit, ymax = upper_limit), width = 0.5) + 
+  theme_classic() + 
+  labs(title = "Subset E (5 marker panel)") 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+  #scale_y_continuous(breaks = seq(0, 250, by = 25))
+
+
+background_spec_limits %>% 
+  filter(!(assay %in% tentative_final)) %>% 
+  rename(avg_background = fit, 
+         upper_limit = lwr, 
+         lower_limit = upr) %>% 
+  ggplot(.,aes(assay, avg_background)) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = lower_limit, ymax = upper_limit), width = 0.5) + 
+  theme_classic() + 
+  labs(title = "Subset E (5 marker panel)") 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+  #scale_y_continuous(breaks = seq(0, 250, by = 25))
+
+
+```
+
+
+**write csv**  
+
+```{r}
+background_spec_limits %>% 
+  rename(avg_background_mfi = fit, 
+         upper_limit = lwr, 
+         lower_limit = upr) %>% 
+  write_csv(here::here("data", "processed", "beta_lot_spec_limits", "provisional_spec_limits-background-mfi.csv"))  
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### Sensitivity    
+
+#### LOB  
+Rough estimate of LOB is maximum value of n replicates measurements of a blank sample   
+
+
+Refer to page 14 of EP17-A2
+
+
+```{r}
+beta_lot_background %>% 
+  count(xponent_id, file_name)
+
+beta_lot_background %>% 
+  filter(sample_type == "standard" | xponent_id == "Background0")
+```
+#### Fit Standard Curve  
+
+```{r}
+list_of_proteins <- beta_lot_background %>% select(assay) %>% 
+  distinct() %>% 
+  pull()
+```
+
+**Save all models in a tibble** ? 
+
+```{r}
+background_mfi_batch <- beta_lot_background %>% 
+  mutate(batch = str_remove(file_name, "_[0-9]+.csv")) %>% 
+  filter(xponent_id == "Assay Buffer" | xponent_id == "Background0") %>% 
+  group_by(batch, assay) %>% 
+  summarise(avg_background_mfi = mean(median_mfi, na.rm = TRUE)) %>% 
+  ungroup()
+
+
+nested_beta <- std_data %>% 
+  mutate(batch = str_remove(file_name, "_[0-9]+.csv")) %>% 
+  full_join(background_mfi_batch, by = c("batch", "assay")) %>% 
+  mutate(net_mfi_new = median_mfi - avg_background_mfi) %>%
+  filter(sample_type == "standard") %>% 
+  group_by(assay, batch) %>% 
+  nest() 
+
+nested_beta %>% 
+  head()
+```
+
+
+```{r}
+logistic_5pl <- function(d, a, median_mfi, c, b, g) {
+  return(d + (a-d)/(a + (median_mfi/c)^b)^g)
+}
+
+fit_5pl <- function(df = NULL){
+  df %>% 
+    filter(sample_type == "standard" | xponent_id == "Background0") %>% 
+    #mutate(standard_expected_concentration = ifelse(xponent_id == "Background0", 
+                                                   #0, standard_expected_concentration)) %>% 
+  nls.multstart::nls_multstart(standard_expected_concentration ~ 
+                                          logistic_5pl(d, a, median_mfi = net_mfi_new, 
+                                                       c, b, g), 
+                                        data = ., 
+                                        iter = 100000, 
+                                        modelweights = 1/standard_expected_concentration^2,
+                                        start_lower = c(a = -1, b = -1, c = 100, d = -1, 
+                                                        g = -1), 
+                                        start_upper = c(a = 1, b = 1, c = 200, d = 1, 
+                                                        g = 1), 
+                                        supp_errors = "Y", 
+                                        control = nls.control(maxiter = 100000, 
+                                                              minFactor=1e-7, 
+                                                              tol=1e-5, 
+                                                              printEval=F, 
+                                                              warnOnly=F))
+}
+
+possible_fit5pl <- purrr::possibly(.f = fit_5pl, otherwise = NA)
+possible_fit5pl(df = beta_lot_background %>% filter(assay == "AFP" & file_name == "20211103_PlatinumStd_Immuno_Panel1_20211103_145503.csv"))
+```
+
+
+
+```{r}
+nested_beta_all_batches <- nested_beta %>% 
+  #filter(file_name == "20211103_PlatinumStd_Immuno_Panel1_20211103_145503.csv" |
+           #file_name == "20211103_PlatinumStd_Immuno_Panel2_20211103_155936.csv") %>% 
+  mutate(mod = map(data, possible_fit5pl))
+nested_beta_all_batches %>% 
+  head()
+```
+
+
+
+
+
+
+```{r}
+
+```
+
+
+Now for each batch, we will 
+1. Count the number of assay buffer replicates (B)
+2. Sort the assay buffer replicates and give each one a rank  
+3. Calculate the 95th percentile according to 
+  0.5 + B*0.95   
+4. LoB is the ranked sample above  
+5. Backfit the sample to the curve to obtain an estimate   
+  
+
+```{r}
+beta_lot_background <- beta_lot_background %>% 
+    mutate(batch = str_remove(file_name, "_[0-9]+.csv"))
+```
+
+
+```{r}
+lob_mfi <- nested_beta %>%
+  unnest() %>% 
+  filter(xponent_id == "Assay Buffer") %>% 
+  group_by(batch, assay) %>% 
+  summarise(mean_mfi = mean(net_mfi_new, na.rm = TRUE), 
+            sd = sd(net_mfi_new, na.rm = TRUE)) %>% 
+  mutate(net_mfi_new = mean_mfi + 2*sd)
+```
+
+
+
+
+
+```{r}
+nested_beta_all_batches %>% 
+  head(1)
+
+tmp <- nested_beta_all_batches %>% 
+  filter(assay == "AFP")
+tmp %>% 
+  head()
+
+
+add_fitted <- function(newdata = NA, model = NA) {
+  broom::augment(x = mode, newdata = newdata)
+}
+
+tmp_join <- lob_mfi %>% 
+  filter(assay == "AFP") %>% 
+  inner_join(tmp) 
+
+afp_fitted_lob<- for (i in 1:nrow(tmp_join)) {
+  model <- tmp_join %>% ungroup() %>% select(mod) %>% 
+    pluck(i)
+  new_data <- tmp_join %>% ungroup() %>% select(net_mfi_new) %>% 
+    pluck(i) 
+  
+  fitted <- broom::augment(model, newdata = new_data) 
+  
+  return(fitted)
+  
+}
+
+lob_mfi
+
+get_lob_estimate <- function(protein = "NULL") {
+  models <- nested_beta_all_batches 
+  
+  for (i in nrow(models)) {
+    
+  }
+}
+```
+
+
+
+### DUMMY   
+
+```{r}
+fit_5pl <- function(df = NULL){
+  df %>% 
+    filter(sample_type == "standard" | xponent_id == "Background0") %>% 
+    #mutate(standard_expected_concentration = ifelse(xponent_id == "Background0", 
+                                                   #0, standard_expected_concentration)) %>% 
+  nls.multstart::nls_multstart(standard_expected_concentration ~ 
+                                          logistic_5pl(d, a, median_mfi = net_mfi, 
+                                                       c, b, g), 
+                                        data = ., 
+                                        iter = 100000, 
+                                        modelweights = 1/standard_expected_concentration^2,
+                                        start_lower = c(a = -1, b = -1, c = 100, d = -1, 
+                                                        g = -1), 
+                                        start_upper = c(a = 1, b = 1, c = 200, d = 1, 
+                                                        g = 1), 
+                                        supp_errors = "Y", 
+                                        control = nls.control(maxiter = 100000, 
+                                                              minFactor=1e-7, 
+                                                              tol=1e-5, 
+                                                              printEval=F, 
+                                                              warnOnly=F))
+}
+afp_single_batch  <- std_data %>% 
+  mutate(batch = str_remove(file_name, "_[0-9]+.csv")) %>% 
+  filter(assay == "AFP") %>% 
+  filter(batch == "20211026_Reproducibilit_Panel1_Plate1_B1_20211027") %>% 
+  filter(sample_type == "standard") %>% 
+  group_by()
+
+afp_mod <- fit_5pl(df = afp_single_batch)
+```
+
+
+```{r}
+afp_lob_mfi <- lob_mfi %>% 
+  filter(batch == "20211026_Reproducibility_Pane1_Plate1_B1_20211027") %>% 
+  filter(assay == "AFP") %>% 
+  rename(net_mfi = net_mfi_new)
+
+broom::augment(afp_mod, newdata = afp_lob_mfi)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#### ULOQ/LLOQ    
+
+```{r}
+recovery_stds_df %>% 
+  inner_join(intra_cv_df, by = c("assay", "xponent_id")) %>% 
+  select(-c(x2_sided_lower, x2_sided_upper, alpha, p, batch)) %>% 
+  group_by(assay, xponent_id) %>% 
+  summarise(avg_recovery = mean(x_bar), avg_intra_cv = mean(intra_cv, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  write_csv(here::here("data", "processed", "beta_lot_spec_limits", "uloq-lloq.csv"))  
+
+```
+
+```{r}
+recovery_stds_df %>% 
+  inner_join(intra_cv_df, by = c("assay", "xponent_id")) %>% 
+  select(-c(x2_sided_lower, x2_sided_upper, alpha, p, batch)) %>% 
+  group_by(assay, xponent_id) %>% 
+  summarise(avg_recovery = mean(x_bar), avg_intra_cv = mean(intra_cv, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  mutate(outside_20 = ifelse(avg_recovery > 120 | avg_recovery < 80, TRUE, FALSE), 
+         higher_cv_15 = ifelse(avg_intra_cv > 15, TRUE, FALSE)) %>% 
+  mutate(precise_quantification = ifelse(outside_20 == FALSE & higher_cv_15 == FALSE, "Yes", "No")) %>% 
+  write_csv(here::here("data", "processed", "beta_lot_spec_limits", "uloq-lloq.csv"))  
+```
+
+```{r}
+recovery_stds_df %>% 
+  inner_join(intra_cv_df, by = c("assay", "xponent_id")) %>% 
+  select(-c(x2_sided_lower, x2_sided_upper, alpha, p, batch)) %>% 
+  group_by(assay, xponent_id) %>% 
+  summarise(avg_recovery = mean(x_bar), avg_intra_cv = mean(intra_cv, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  mutate(outside_20 = ifelse(avg_recovery > 120 | avg_recovery < 80, TRUE, FALSE), 
+         higher_cv_15 = ifelse(avg_intra_cv > 15, TRUE, FALSE)) %>% 
+  mutate(precise_quantification = ifelse(outside_20 == FALSE & higher_cv_15 == FALSE, "Yes", "No"))
+```
+
+
+
+
+
+### Failures    
+
+This section aims to understand what is the occurence of the standards failing in terms of bead counts and in terms of the outlier test (modified z-score approach).   
+
+
+We read in the latest standards and controls data up till January 19 2022.   
+
+
+```{r}
+## same as above - remove the run where we have an assignable cause   
+raw <- read_csv(here::here("data", "raw", "standards_and_controls-2022-01-19.csv")) %>% 
+          mutate(batch = str_remove(file_name, "_[0-9]+.csv")) %>% 
+          filter(lot_number == "1641339" | lot_number == "1641338") %>% 
+          filter(!grepl("20211028_Reproducibilit_Panel2_Plate3", file_name)) %>% 
+  filter(assay %in% c("WFDC2", "CEA", "IL-8", "IL-1 R2", "TNC", "MUC-16", "FLT3L"))
+```
+```{r}
+
+```
+
+
+```{r}
+raw %>% 
+  filter(sample_type == "standard") %>% 
+  mutate(bead_fail = ifelse(bead_count < 35, 1, 0)) %>% 
+  group_by(assay, xponent_id) %>% 
+  summarise(mean_fails = 100*mean(bead_fail)) %>% 
+  ggplot(.,aes(xponent_id, mean_fails)) + 
+  geom_point(color = freenome_colors[1]) + 
+  facet_wrap(vars(assay)) + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Now, remove the wells with the outlier in it and can we count what proportion were outliers? 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,668 @@
+---
+title: "Distribution of Beta Lot Data By Instrument/Operator"
+author: "Dilsher Singh Dhillon"
+date: "`r format(Sys.time(),'%d %B,%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float : true
+    toc_depth: 4
+---
+<style>
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+    background-color: #948DFF;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(plotly)
+library(DT)
+```
+
+```{r}
+options(gargle_oauth_email = TRUE)
+```
+
+
+<font size="4" color="#BBD532">  
+
+## Introduction    
+
+</font>  
+
+**Using data uptill 25th January**   
+
+```
+pate-rnd xmap-collector --include_file_str 20220119_WC_P1vP6 \
+  --include_file_str  20220120_ShakeSpd_1000rpm_Panel1_Plate1 \
+  --include_file_str  20220120_ShakeSpd_1200rpm_Panel1_Plate2 \
+  --include_file_str  20220120_ShakeSpd_1500rpm_Panel1_Plate3 \
+  --include_file_str  20220120_ShakeSpd_1000rpm_Panel2_Plate1 \
+  --include_file_str  20220120_ShakeSpd_1200rpm_Panel2_Plate2 \
+  --include_file_str  20220120_ShakeSpd_1500rpm_Panel2_Plate3 \
+  --include_file_str  20220120_ShakeSpd_1200rpm_Panel2_Plate2 \
+  --include_file_str  20220120_ShakeSpd_1500rpm_Panel2_Plate2 \
+  --include_file_str  Beta \
+  --include_file_str  Interf \
+  --include_file_str  PltStd \
+  --include_file_str  Endogenous \
+  --include_file_str  Exogenous \
+  --include_file_str  Platinum \
+  --include_file_str  Reproducibility \
+  --include_file_str  Donor_Screening \
+  --include_file_str  PlatinumStd \
+  --include_file_str  HamiltonEquiv\
+  --include_file_str  ShakingCompare \
+  --include_file_str  20211221_DLS_Matrix_Int \
+  --include_sample_str Standard --include_sample_str Buffer --include_sample_str Background --include_sample_str QC --include_sample_str RC  --ignore_case_sample \
+  --out_file_name betalot_experiments-2022-01-25.csv
+```
+
+
+```
+gsutil cp gs://inhouse-xmap-data/user_data_frames/betalot_experiments-2022-01-25.csv ~/'google drive'/'my drive'/projects/beta-av-testing/data/raw/beta-lot-stds-controls-2022-01-25.csv
+```
+
+
+This notebook aims to explore the distribution of Flexmaps and Hamiltons using the beta lot data. We will  - 
+
+1. Extract xMAP controls and standards data  
+2. Extract the xmap [log](https://docs.google.com/spreadsheets/d/1apRR9pYI0JXyZnKiISMVLC10kFAJ7Bp7KrmzUPZvwgA/edit#gid=974276133&fvid=1078495155)  
+3. Match the batches we have available hamilton and flexmap information.  
+
+**Note** 
+It looks like the log was only started to collect after 2021-12-02   
+
+raw .rmd file stored here 
+```
+/home/ddhillon/dyson-sync/projects/beta-av-testing/notebooks/process-pseudo-guardbanding/notebooks/02.rmd
+```
+
+
+
+##  Data Import 
+
+
+### xMAP Data 
+
+
+**Using data uptill 25th January**   
+
+```{r warning=FALSE, message=FALSE}
+raw <- read_csv(here::here("data", "raw", "beta-lot-stds-controls-2022-01-25.csv")) %>% 
+    filter(!grepl("20211028_Reproducibilit_Panel2_Plate3", file_name)) %>% 
+  filter(assay %in% c("WFDC2", "TNC", "FLT3L", "CEA", "IL-8", 
+    "IL-1 R2", "MUC-16"))
+
+```
+**Batches in xMAP**    
+
+```{r}
+raw <- raw %>% 
+  mutate(batch = str_remove(file_name, "_[0-9]+.csv")) %>% 
+  mutate(batch = stringi::stri_replace_all_regex(batch, "\\d+$", "")) %>% 
+  mutate(batch = stringi::stri_replace_all_regex(batch, "\\_$", "")) 
+
+raw %>% 
+  distinct(batch) %>% 
+  DT::datatable(.)
+```
+
+
+```{r}
+xmap_batches <- raw %>% 
+   #mutate(batch = stringi::stri_replace_all_regex(batch, "\\d+$", "")) %>% 
+   #mutate(batch = stringi::stri_replace_all_regex(batch, "\\_$", "")) %>% 
+   distinct(batch)
+```
+
+
+
+###  Log of instruments 
+
+```{r}
+googlesheets4::gs4_auth()
+```
+
+```{r warning=FALSE, message=FALSE}
+log <- googlesheets4::read_sheet("https://docs.google.com/spreadsheets/d/1apRR9pYI0JXyZnKiISMVLC10kFAJ7Bp7KrmzUPZvwgA/edit#gid=974276133&fvid=1078495155", 
+                          sheet = 2) %>% 
+  janitor::clean_names() %>% 
+  rename(batch = batch_name)
+```
+
+
+**Batches in log**    
+```{r}
+log_batches <- log %>% 
+  distinct(batch)
+log %>% 
+    DT::datatable(.)
+```
+**Match the log of batches with the batches from xMAP data**   
+
+*Which ones match?*  
+
+```{r}
+xmap_batches %>% 
+  inner_join(log_batches) %>% 
+    DT::datatable(.)
+```
+*Which ones don't match?*    
+
+```{r}
+log_batches %>% 
+  anti_join(xmap_batches) %>% 
+    DT::datatable(.)  
+
+```
+Some don't match since the names aren't exactly the same - we will change these manually. There are still some we're not able to retrieve xmap data on.  
+
+```{r eval=FALSE, echo=TRUE}
+xmap_batches %>% 
+  mutate(batch = case_when(batch == "20211214_ShakeComp_Auto_Beta_Panel2_B3" ~ "20211214_ShakingCompare_Auto_Beta_Panel2", 
+                           batch == "20211214_Shake_Workcell_Beta_Panel2_B1.csv" ~ "20211214_ShakingCompare_Workcell_Beta_Panel2", 
+                           batch == "20211214_Shake_Workcell_Beta_Panel2_B2" ~ "20211214_ShakingCompare_Workcell_Beta_Panel2", 
+                           batch == "20211214_Shake_Workcell_Beta_Panel2_B3" ~ "20211214_ShakingCompare_Workcell_Beta_Panel2", 
+                           batch == "20211214_Shaking_Auto_Beta_Panel1_B1"  ~ "20211214_ShakingCompare_Auto_Beta_Panel1", 
+                           batch == "20211214_Shaking_Auto_Beta_Panel1_B2" ~ "20211214_ShakingCompare_Auto_Beta_Panel1",
+                           batch == "20211214_Shaking_Auto_Beta_Panel1_B3" ~ "20211214_ShakingCompare_Auto_Beta_Panel1", 
+                           batch == "20211214_Shaking_Workcell_Beta_Panel1_B1" ~ "20211214_ShakingCompare_Workcell_Beta_Panel1", 
+                           batch == "20211214_Shaking_Workcell_Beta_Panel1_B2" ~ "20211214_ShakingCompare_Workcell_Beta_Panel1", 
+                           batch == "20211214_Shaking_Workcell_Beta_Panel1_B3" ~ "20211214_ShakingCompare_Workcell_Beta_Panel1", 
+                           batch == "20210111_PltStd2_Panel1_P3_B1" ~ "20220111_PltStd2_Panel1_P3", 
+                           batch == "20210111_PltStd2_Panel1_P3_B2" ~ "20220111_PltStd2_Panel1_P3", 
+                           batch == "20210111_PltStd2_Panel1_P3_B3" ~ "20220111_PltStd2_Panel1_P3", 
+                           batch == "20220111_PltStd2_Panel2_P3_B1" ~ "20220111_PltStd2_Panel2_P3", 
+                           batch == "20220111_PltStd2_Panel2_P3_B2" ~ "20220111_PltStd2_Panel2_P3", 
+                           batch == "20220111_PltStd2_Panel2_P3_B3" ~ "20220111_PltStd2_Panel2_P3", 
+                           batch == "20220119_WC_P1vP6_P2_Plate2" ~ "20220119_WC_P1vP6_P2_plate2", 
+                           TRUE ~ as.character(batch))) %>% 
+  inner_join(log_batches)
+```
+
+
+**NOTE**     
+Batches not in pate    
+1. 20211221_DLS_Matrix_Int_  
+2. 20220113_1500Shake_TS_  
+3. 20220124_BufferAdditives_  
+4. 20220201_AdditivesStds_  
+
+Update the above plots after adding this in   
+
+
+
+```{r}
+xmap_batches <- xmap_batches %>% 
+  mutate(batch = case_when(batch == "20211214_ShakeComp_Auto_Beta_Panel2_B3" ~ "20211214_ShakingCompare_Auto_Beta_Panel2", 
+                           batch == "20211214_Shake_Workcell_Beta_Panel2_B1.csv" ~ "20211214_ShakingCompare_Workcell_Beta_Panel2", 
+                           batch == "20211214_Shake_Workcell_Beta_Panel2_B2" ~ "20211214_ShakingCompare_Workcell_Beta_Panel2", 
+                           batch == "20211214_Shake_Workcell_Beta_Panel2_B3" ~ "20211214_ShakingCompare_Workcell_Beta_Panel2", 
+                           batch == "20211214_Shaking_Auto_Beta_Panel1_B1"  ~ "20211214_ShakingCompare_Auto_Beta_Panel1", 
+                           batch == "20211214_Shaking_Auto_Beta_Panel1_B2" ~ "20211214_ShakingCompare_Auto_Beta_Panel1",
+                           batch == "20211214_Shaking_Auto_Beta_Panel1_B3" ~ "20211214_ShakingCompare_Auto_Beta_Panel1", 
+                           batch == "20211214_Shaking_Workcell_Beta_Panel1_B1" ~ "20211214_ShakingCompare_Workcell_Beta_Panel1", 
+                           batch == "20211214_Shaking_Workcell_Beta_Panel1_B2" ~ "20211214_ShakingCompare_Workcell_Beta_Panel1", 
+                           batch == "20211214_Shaking_Workcell_Beta_Panel1_B3" ~ "20211214_ShakingCompare_Workcell_Beta_Panel1", 
+                           batch == "20210111_PltStd2_Panel1_P3_B1" ~ "20220111_PltStd2_Panel1_P3", 
+                           batch == "20210111_PltStd2_Panel1_P3_B2" ~ "20220111_PltStd2_Panel1_P3", 
+                           batch == "20210111_PltStd2_Panel1_P3_B1" ~ "20220111_PltStd2_Panel1_P3", 
+                           batch == "20220111_PltStd2_Panel2_P3_B1" ~ "20220111_PltStd2_Panel2_P3", 
+                           batch == "20220111_PltStd2_Panel2_P3_B2" ~ "20220111_PltStd2_Panel2_P3", 
+                           batch == "20220111_PltStd2_Panel2_P3_B3" ~ "20220111_PltStd2_Panel2_P3", 
+                           batch == "20220119_WC_P1vP6_P2_Plate2" ~ "20220119_WC_P1vP6_P2_plate2", 
+                           TRUE ~ as.character(batch)))
+```
+
+
+
+Strings that are still not matching 
+```{r}
+log_batches %>% 
+  #mutate(batch = case_when(grepl("PltStd2", batch ~ str_remove(batch, "(?<=Panel[0-9]).*")) %>% 
+  anti_join(xmap_batches, by = "batch")   %>% 
+  DT::datatable(.)
+
+```
+
+
+
+```{r}
+## update the xmap file 
+raw <- raw %>% 
+  mutate(batch = case_when(batch == "20211214_ShakeComp_Auto_Beta_Panel2_B3" ~ "20211214_ShakingCompare_Auto_Beta_Panel2", 
+                           batch == "20211214_Shake_Workcell_Beta_Panel2_B1.csv" ~ "20211214_ShakingCompare_Workcell_Beta_Panel2", 
+                           batch == "20211214_Shake_Workcell_Beta_Panel2_B2" ~ "20211214_ShakingCompare_Workcell_Beta_Panel2", 
+                           batch == "20211214_Shake_Workcell_Beta_Panel2_B3" ~ "20211214_ShakingCompare_Workcell_Beta_Panel2", 
+                           batch == "20211214_Shaking_Auto_Beta_Panel1_B1"  ~ "20211214_ShakingCompare_Auto_Beta_Panel1", 
+                           batch == "20211214_Shaking_Auto_Beta_Panel1_B2" ~ "20211214_ShakingCompare_Auto_Beta_Panel1",
+                           batch == "20211214_Shaking_Auto_Beta_Panel1_B3" ~ "20211214_ShakingCompare_Auto_Beta_Panel1", 
+                           batch == "20211214_Shaking_Workcell_Beta_Panel1_B1" ~ "20211214_ShakingCompare_Workcell_Beta_Panel1", 
+                           batch == "20211214_Shaking_Workcell_Beta_Panel1_B2" ~ "20211214_ShakingCompare_Workcell_Beta_Panel1", 
+                           batch == "20211214_Shaking_Workcell_Beta_Panel1_B3" ~ "20211214_ShakingCompare_Workcell_Beta_Panel1", 
+                           batch == "20210111_PltStd2_Panel1_P3_B1" ~ "20220111_PltStd2_Panel1_P3", 
+                           batch == "20210111_PltStd2_Panel1_P3_B2" ~ "20220111_PltStd2_Panel1_P3", 
+                           batch == "20210111_PltStd2_Panel1_P3_B1" ~ "20220111_PltStd2_Panel1_P3", 
+                           batch == "20220111_PltStd2_Panel2_P3_B1" ~ "20220111_PltStd2_Panel2_P3", 
+                           batch == "20220111_PltStd2_Panel2_P3_B2" ~ "20220111_PltStd2_Panel2_P3", 
+                           batch == "20220111_PltStd2_Panel2_P3_B3" ~ "20220111_PltStd2_Panel2_P3", 
+                           batch == "20220119_WC_P1vP6_P2_Plate2" ~ "20220119_WC_P1vP6_P2_plate2", 
+                           TRUE ~ as.character(batch)))
+
+```
+
+
+### Operator information?  
+
+Can we also add in operator information to these experiments?  
+
+```{r}
+operator_data <- googlesheets4::read_sheet("https://docs.google.com/spreadsheets/d/1xLCJMAVQLUytQBmNK6M7nUsd7EcBAPNQ2Fe1KVUZEMs/edit#gid=290693551", 
+                                           sheet = "In-house_xMAP", skip = 8)
+```
+
+```{r}
+operator_data %>% 
+  select(Date, Operator, `Batch Name (in LIMS)`, Description, `Panel Name`, `Panel Lot #`, `Instrument Name`) %>% 
+  janitor::clean_names() %>% 
+  mutate(date = as.character(date)) %>% 
+  mutate(date = lubridate::as_date(date)) %>% 
+  filter(date >= "2021-12-02") %>% 
+  rename(batch = batch_name_in_lims) %>% 
+  inner_join(log_batches)
+
+operator_batches <- operator_data %>% 
+  select(Date, Operator, `Batch Name (in LIMS)`, Description, `Panel Name`, `Panel Lot #`, `Instrument Name`) %>% 
+  janitor::clean_names() %>% 
+  mutate(date = as.character(date)) %>% 
+  mutate(date = lubridate::as_date(date)) %>% 
+  filter(date >= "2021-12-02") %>% 
+  rename(batch = batch_name_in_lims) %>% 
+  select(operator, batch, description)
+```
+
+
+
+
+
+
+## Viz   
+
+
+### QCs   
+
+Which experiments had QCs on them?  
+10 experiments?  
+
+5 experiments had RCs on them (log was started on 20211202 so any experiments with RCs on them prior to that aren't in this list currently) 
+
+We have more data on the latest controls so we will look at those  
+
+```{r include=FALSE}
+raw %>% 
+  inner_join(log, by = "batch") %>% 
+  inner_join(operator_batches)
+```
+
+
+```{r include=FALSE}
+plot_data <- raw %>% 
+  inner_join(log, by = "batch") %>% 
+  inner_join(operator_batches) %>% 
+  filter(grepl("QC", xponent_id)) %>% 
+  filter(!grepl("MIF", xponent_id)) %>% 
+  filter(!grepl("OPN", xponent_id)) %>% 
+  filter(!grepl("THBS", xponent_id)) %>% 
+  mutate(hamilton = ifelse(hamilton == "ProStar1", "ProStar 1", hamilton)) %>% 
+  mutate(hamilton = ifelse(hamilton == "ProStar2", "ProStar 2", hamilton)) 
+
+plot_data %>% 
+  distinct(batch) %>% 
+  DT::datatable(.)
+```
+
+```{r}
+plot_data %>% 
+  distinct(batch, .keep_all = TRUE) %>% 
+  count(flex_map3d, hamilton, operator) %>% 
+  mutate(n = as.character(n)) %>% 
+  ggplot(.,aes(hamilton, flex_map3d)) + 
+  geom_point(aes(color = n)) + 
+  facet_grid(cols = vars(operator)) + 
+  labs(subtitle = "Hard to make definitive comparisons with small number of experiments")
+```
+
+
+```{r}
+plot_data <- raw %>% 
+  inner_join(log, by = "batch") %>% 
+  inner_join(operator_batches) %>% 
+  filter(grepl("QC", xponent_id)) %>% 
+  filter(!grepl("MIF", xponent_id)) %>% 
+  filter(!grepl("OPN", xponent_id)) %>% 
+  filter(!grepl("THBS", xponent_id)) %>% 
+  mutate(hamilton = ifelse(hamilton == "ProStar1", "ProStar 1", hamilton)) %>% 
+  mutate(hamilton = ifelse(hamilton == "ProStar2", "ProStar 2", hamilton)) %>% 
+  mutate(xponent_id = str_remove(xponent_id, " "))
+```
+
+
+
+**Plots out all the RCs for each flexmap and hamilton**   
+
+```{r}
+list_of_proteins <- plot_data %>% distinct(assay) %>% pull()
+```
+
+
+
+```{r}
+assay_level_plot_function <- function(protein = "NULL", x_axis = flex_map3d, 
+                                      color = hamilton) {
+  p <- plot_data %>% 
+  filter(assay == protein) %>% 
+  group_by(assay, xponent_id, batch, flex_map3d, hamilton, operator) %>% 
+  summarise(avg_conc = mean(calc_conc, na.rm = TRUE)) %>% 
+  ggplot(.,aes(x = {{x_axis}}, y = avg_conc, operator = operator)) + 
+  geom_point(aes( color = {{color}})) + 
+  facet_grid(cols = vars(xponent_id)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 5), 
+        strip.text = element_text(
+    size = 5, color = freenome_colors[1])) 
+
+ggplotly(p)
+}
+
+rc_plots <- map(list_of_proteins, ~ assay_level_plot_function(.x))
+
+render_plot <- function(x) {
+  p <- rc_plots[x]
+  cat("\n")
+    cat(htmltools::renderTags(as.widget(p))$html)
+}
+
+
+tabset_rendering <- function(x) {
+  cat("##### ", list_of_proteins[x], "\n") 
+  
+  render_plot(x)
+
+}
+```
+  
+#### Flexmap x-axis {.tabset}  
+
+```{r fig.height=14, fig.width=12, results='asis'}
+purrr::map(1:length(list_of_proteins), ~ tabset_rendering(x = .x))
+```
+
+#### Hamilton x-axis {.tabset}  
+
+
+```{r}
+## plot hamilton on x-axis instead 
+rc_plots <- map(list_of_proteins, ~ assay_level_plot_function(.x, x_axis = hamilton, 
+                                                              color = flex_map3d))
+```
+
+
+```{r results='asis', fig.height=14, fig.width=12}
+purrr::map(1:length(list_of_proteins), ~ tabset_rendering(x = .x))
+```
+
+
+```{r echo=FALSE, messages=FALSE, warning=FALSE, eval=TRUE}
+# Attach the Dependencies since they do not get included with renderTags(...)$html
+deps <- lapply(
+  Filter(f = function(x){inherits(x,"htmlwidget")}, x = rc_plots),
+  function(hw){
+    htmltools::renderTags(hw)$dependencies
+  }
+)
+htmltools::attachDependencies(x = htmltools::tagList(), value = unlist(deps,recursive=FALSE))
+```
+
+
+
+### Recoveries  
+
+Experiments with recoveries  
+
+```{r}
+plot_data <- raw %>% 
+  inner_join(log, by = "batch") %>% 
+  filter(sample_type == "standard") %>% 
+  inner_join(operator_batches) %>% 
+  mutate(hamilton = ifelse(hamilton == "ProStar1", "ProStar 1", hamilton)) %>% 
+  mutate(hamilton = ifelse(hamilton == "ProStar2", "ProStar 2", hamilton)) %>% 
+  filter(pct_recovery < 200)
+
+plot_data %>% 
+  distinct(batch) %>% 
+  DT::datatable(.)
+
+plot_data %>% 
+  distinct(batch, .keep_all = TRUE) %>% 
+  count(hamilton, flex_map3d, operator) %>% 
+  ggplot(., aes(hamilton, flex_map3d)) + 
+  geom_point(aes(color = as.character(n))) +
+  facet_grid(cols = vars(operator))
+```
+
+
+
+
+```{r}
+recovery_plot_function <- function(protein = "NULL", x_axis = flex_map3d, 
+                                      color = hamilton) {
+  p <- plot_data %>% 
+  filter(assay == protein) %>% 
+  group_by(assay, xponent_id, batch, flex_map3d, hamilton, operator) %>% 
+  summarise(avg_recovery = mean(pct_recovery, na.rm = TRUE)) %>% 
+  ggplot(.,aes(x = {{x_axis}}, y = avg_recovery, operator = operator)) + 
+  geom_point(aes( color = {{color}})) + 
+  facet_grid(cols = vars(xponent_id)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(
+    size = 10, color = freenome_colors[3])) 
+
+ggplotly(p)
+}
+
+recovery_plots <- map(list_of_proteins, ~ recovery_plot_function(.x))
+
+render_plot <- function(x) {
+  p <- recovery_plots[x]
+  cat("\n")
+    cat(htmltools::renderTags(as.widget(p))$html)
+}
+
+
+tabset_rendering <- function(x) {
+  cat("##### ", list_of_proteins[x], "\n") 
+  
+  render_plot(x)
+
+}
+```
+  
+#### Flexmap x-axis {.tabset}  
+
+```{r fig.height=14, fig.width=12, results='asis'}
+purrr::map(1:length(list_of_proteins), ~ tabset_rendering(x = .x))
+```
+
+#### Hamilton x-axis {.tabset}  
+
+
+```{r}
+## plot hamilton on x-axis instead 
+recovery_plots <- map(list_of_proteins, ~ recovery_plot_function(.x, x_axis = hamilton, 
+                                                              color = flex_map3d))
+render_plot <- function(x) {
+  p <- recovery_plots[x]
+  cat("\n")
+    cat(htmltools::renderTags(as.widget(p))$html)
+}
+```
+
+
+```{r results='asis', fig.height=14, fig.width=12}
+purrr::map(1:length(list_of_proteins), ~ tabset_rendering(x = .x))
+```
+
+
+
+```{r echo=FALSE, messages=FALSE, warning=FALSE, eval=TRUE}
+# Attach the Dependencies since they do not get included with renderTags(...)$html
+deps <- lapply(
+  Filter(f = function(x){inherits(x,"htmlwidget")}, x = recovery_plots),
+  function(hw){
+    htmltools::renderTags(hw)$dependencies
+  }
+)
+htmltools::attachDependencies(x = htmltools::tagList(), value = unlist(deps,recursive=FALSE))
+```
+
+#### Operator specific comparison  {.tabset}
+
+```{r}
+plot_data %>% 
+  distinct(batch, .keep_all = TRUE) %>% 
+  count(hamilton, flex_map3d, operator) %>% 
+  ggplot(., aes(hamilton, flex_map3d)) + 
+  geom_point(aes(color = as.character(n))) +
+  facet_grid(cols = vars(operator)) + 
+  labs(title = "Should only compare difference within one operator?")
+```
+
+```{r}
+plot_data <- plot_data %>% 
+  filter(operator == "Wilson Z")
+```
+
+
+
+```{r}
+## plot flexmap on x-axis instead 
+recovery_plots <- map(list_of_proteins, ~ recovery_plot_function(.x, x_axis = flex_map3d, 
+                                                              color = hamilton))
+render_plot <- function(x) {
+  p <- recovery_plots[x]
+  cat("\n")
+    cat(htmltools::renderTags(as.widget(p))$html)
+}
+```
+
+
+```{r results='asis', fig.height=12, fig.width=8}
+purrr::map(1:length(list_of_proteins), ~ tabset_rendering(x = .x))
+```
+
+
+
+
+
+
+
+
+### Bead counts  
+
+
+```{r}
+plot_data <- raw %>% 
+  inner_join(log, by = "batch") %>% 
+  inner_join(operator_batches) %>% 
+  mutate(hamilton = ifelse(hamilton == "ProStar1", "ProStar 1", hamilton)) %>% 
+  mutate(hamilton = ifelse(hamilton == "ProStar2", "ProStar 2", hamilton)) 
+```
+
+```{r}
+bead_count_plot_function <- function(protein = "NULL", x_axis = flex_map3d, 
+                                      color = hamilton) {
+  p <- plot_data %>% 
+  filter(assay == protein) %>% 
+  group_by(assay, sample_type, batch, flex_map3d, hamilton, operator) %>% 
+  summarise(avg_bead = mean(bead_count, na.rm = TRUE)) %>% 
+  ggplot(.,aes(x = {{x_axis}}, y = avg_bead, operator = operator)) + 
+  geom_point(aes( color = {{color}})) + 
+  facet_grid(cols = vars(sample_type)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+ggplotly(p)
+}
+
+bead_plots <- map(list_of_proteins, ~ bead_count_plot_function(.x))
+```
+```{r}
+
+render_plot <- function(x) {
+  p <- bead_plots[x]
+  cat("\n")
+    cat(htmltools::renderTags(as.widget(p))$html)
+}
+
+
+tabset_rendering <- function(x) {
+  cat("##### ", list_of_proteins[x], "\n") 
+  
+  render_plot(x)
+
+}
+```
+
+  
+#### Flexmap x-axis {.tabset}  
+
+```{r eval=FALSE, fig.height=12, fig.width=8, include=FALSE, results='asis'}
+purrr::map(1:length(list_of_proteins), ~ tabset_rendering(x = .x))
+```
+
+#### Hamilton x-axis {.tabset}  
+
+
+```{r}
+## plot hamilton on x-axis instead 
+bead_plots <- map(list_of_proteins, ~ bead_count_plot_function(.x, x_axis = hamilton, 
+                                                              color = flex_map3d))
+
+render_plot <- function(x) {
+  p <- bead_plots[x]
+  cat("\n")
+    cat(htmltools::renderTags(as.widget(p))$html)
+}
+```
+
+
+```{r results='asis', fig.height=12, fig.width=8}
+purrr::map(1:length(list_of_proteins), ~ tabset_rendering(x = .x))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,448 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+```{r}
+library(tidyverse)
+library(lme4)
+```
+
+## Full Factorial   
+
+```{r}
+full_factorial <- tidyr::crossing(operator = c("A", "B", "C"), 
+                                  hamilton = c("1", "2", "3"), 
+                                  lot = c("ach", "fch", "fce"), 
+                flexmap = c("1", "2", "3", "4", "5", "6"), 
+                workcell = c("1", "2")) 
+
+full_factorial %>% 
+  ggplot(aes(operator, hamilton)) + 
+  geom_point() + 
+  facet_grid(rows = vars(workcell, lot), cols = vars(flexmap)) + 
+  labs(title = "Full Factorial", 
+       subtitle = "324 runs")
+```
+
+```{r}
+blocked_6_flex_panel_1 <- tibble::tribble(
+                                ~Day, ~run, ~lot, ~workcell, ~hamilton, ~operator, ~flexmap,
+                            "Day 1",  1L, "fch",  1L,  3L, "A",  1L,
+                            "Day 1",  2L, "ach",  1L,  2L, "B",  2L,
+                            "Day 1",  3L, "fch",  2L,  1L, "C",  3L,
+                            "Day 1",  4L, "ach",  1L,  2L, "B",  2L,
+                            "Day 1",  5L, "ach",  2L,  3L, "C",  5L,
+                            "Day 1",  6L, "fch",  2L,  1L, "C",  3L,
+                            "Day 1",  7L, "fce",  2L,  2L, "A",  6L,
+                            "Day 2",  8L, "fce",  2L,  1L, "A",  2L,
+                            "Day 2",  9L, "ach",  1L,  2L, "B",  3L,
+                            "Day 2", 10L, "ach",  2L,  1L, "B",  1L,
+                            "Day 2", 11L, "fch",  1L,  3L, "C",  6L,
+                            "Day 2", 12L, "fch",  2L,  2L, "A",  4L,
+                            "Day 3", 13L, "fch",  2L,  2L, "C",  2L,
+                            "Day 3", 14L, "ach",  1L,  1L, "C",  4L,
+                            "Day 3", 15L, "fce",  2L,  3L, "B",  4L,
+                            "Day 3", 16L, "fce",  2L,  2L, "C",  1L,
+                            "Day 3", 17L, "fch",  1L,  1L, "A",  3L,
+                            "Day 4", 18L, "fce",  1L,  3L, "C",  2L,
+                            "Day 4", 19L, "fch",  1L,  2L, "B",  5L,
+                            "Day 4", 20L, "ach",  2L,  3L, "A",  3L,
+                            "Day 4", 21L, "fce",  1L,  1L, "B",  4L,
+                            "Day 4", 22L, "fch",  2L,  1L, "B",  6L,
+                            "Day 5", 23L, "fch",  2L,  3L, "B",  2L,
+                            "Day 5", 24L, "ach",  2L,  1L, "C",  5L,
+                            "Day 5", 25L, "ach",  1L,  3L, "A",  6L,
+                            "Day 5", 26L, "fce",  1L,  2L, "C",  3L,
+                            "Day 6", 27L, "ach",  1L,  1L, "C",  1L,
+                            "Day 6", 28L, "fce",  1L,  1L, "A",  5L,
+                            "Day 6", 29L, "fce",  2L,  3L, "B",  3L,
+                            "Day 6", 30L, "ach",  2L,  2L, "A",  4L
+                            ) %>% 
+  mutate(lot = tolower(lot)) %>% 
+  mutate_all(., ~ as.character(.x)) %>% 
+   mutate(panel = rep("panel1", nrow(.)))
+
+blocked_6_flex_panel_2 <- blocked_6_flex_panel_1 %>% 
+  mutate(flexmap_2 = case_when(flexmap == "1" ~ as.character(sample(2:6, 1)), 
+                         flexmap == "2" ~ as.character(sample(c(1, 3:6), 1)), 
+                         flexmap == "3" ~ as.character(sample(c(1, 2, 4:6), 1)), 
+                         flexmap == "4" ~ as.character(sample(c(1:3, 5:6), 1)), 
+                         flexmap == "5" ~ as.character(sample(c(1:4, 6), 1)), 
+                         flexmap == "6" ~ as.character(sample(c(1:5), 1)))) %>% 
+  select(-flexmap, -panel) %>% 
+  rename(flexmap = flexmap_2) %>% 
+  mutate(panel = rep("panel2", nrow(.)))
+```
+
+
+```{r}
+blocked_6_flex_panel_2 %>% 
+  mutate(flexmap = case_when(flexmap == "1" & lot == "fch" ~ "5", 
+                             flexmap == "1" & lot == "fce" ~ "5", 
+                             is.character(flexmap) ~ flexmap)) %>% 
+  ggplot(aes(operator, hamilton)) + 
+  geom_point() + 
+  facet_grid(rows = vars(workcell, lot), cols = vars(flexmap)) + 
+  labs(title = "Panel 2 Design", 
+       subtitle = "n = 30")
+
+
+blocked_6_flex_panel_1 %>% 
+  ggplot(aes(operator, hamilton)) + 
+  geom_point() + 
+  facet_grid(rows = vars(workcell, lot), cols = vars(flexmap)) + 
+  labs(title = "Panel 1 Design", 
+       subtitle = "n = 30")
+
+blocked_6_flex_panel_1 %>% 
+  bind_rows(blocked_6_flex_panel_2) %>% 
+   ggplot(aes(operator, workcell)) + 
+  geom_point(aes(color = panel)) + 
+  facet_grid(rows = vars(hamilton, lot), cols = vars(flexmap)) 
+```
+
+
+
+
+
+```{r}
+blocked_3_flex <- tibble::tribble(
+                                                  ~Day, ~run, ~lot, ~workcell, ~hamilton, ~operator, ~flexmap,
+                                              "Day 1",  1L, "fch",  1L,  2L, "C",  1L,
+                                              "Day 1",  2L, "ach",  1L,  1L, "A",  2L,
+                                              "Day 1",  3L, "fch",  1L,  1L, "B",  3L,
+                                              "Day 1",  4L, "fce",  2L,  3L, "B",  2L,
+                                              "Day 1",  5L, "fce",  2L,  3L, "B",  2L,
+                                              "Day 1",  6L, "fce",  2L,  2L, "A",  1L,
+                                              "Day 1",  7L, "fch",  1L,  2L, "C",  1L,
+                                              "Day 2",  8L, "ach",  2L,  2L, "B",  2L,
+                                              "Day 2",  9L, "fch",  1L,  3L, "C",  1L,
+                                              "Day 2", 10L, "fch",  2L,  3L, "A",  3L,
+                                              "Day 2", 11L, "fce",  1L,  1L, "A",  3L,
+                                              "Day 2", 12L, "fce",  1L,  1L, "C",  1L,
+                                              "Day 3", 13L, "fch",  1L,  2L, "C",  2L,
+                                              "Day 3", 14L, "ach",  2L,  1L, "C",  3L,
+                                              "Day 3", 15L, "ach",  2L,  3L, "A",  1L,
+                                              "Day 3", 16L, "fce",  1L,  3L, "B",  3L,
+                                              "Day 3", 17L, "fce",  1L,  2L, "A",  2L,
+                                              "Day 4", 18L, "fce",  2L,  1L, "C",  2L,
+                                              "Day 4", 19L, "fch",  2L,  3L, "A",  2L,
+                                              "Day 4", 20L, "fch",  2L,  2L, "B",  3L,
+                                              "Day 4", 21L, "ach",  1L,  3L, "C",  3L,
+                                              "Day 4", 22L, "ach",  1L,  2L, "B",  1L,
+                                              "Day 5", 23L, "ach",  1L,  2L, "A",  3L,
+                                              "Day 5", 24L, "fce",  1L,  3L, "B",  1L,
+                                              "Day 5", 25L, "fch",  2L,  1L, "A",  1L,
+                                              "Day 5", 26L, "ach",  2L,  3L, "C",  2L,
+                                              "Day 6", 27L, "ach",  1L,  3L, "A",  2L,
+                                              "Day 6", 28L, "ach",  2L,  1L, "B",  1L,
+                                              "Day 6", 29L, "fce",  2L,  2L, "C",  3L,
+                                              "Day 6", 30L, "fch",  1L,  1L, "B",  2L
+                                              ) %>% 
+                                             mutate(lot = tolower(lot)) %>% 
+  mutate_all(., ~ as.character(.x)) %>% 
+   mutate(panel = rep("panel1", nrow(.)))
+```
+
+
+
+```{r}
+full_factorial <- tidyr::crossing(operator = c("A", "B", "C"), 
+                                  hamilton = c("1", "2", "3"), 
+                                  lot = c("ach", "fch", "fce"), 
+                flexmap = c("1", "2", "3"), 
+                workcell = c("1", "2")) 
+
+full_factorial %>% 
+  ggplot(aes(operator, hamilton)) + 
+  geom_point() + 
+  facet_grid(rows = vars(workcell, lot), cols = vars(flexmap)) + 
+  labs(title = "Full Factorial", 
+       subtitle = "162 runs")
+
+blocked_3_flex %>% 
+ggplot(aes(operator, hamilton)) + 
+  geom_point() + 
+  facet_grid(rows = vars(workcell, lot), cols = vars(flexmap)) + 
+  labs(title = "", 
+       subtitle = "n = 30")
+```
+
+
+
+
+
+
+
+## Simulation   
+
+### Full factorial   
+
+```{r}
+sd_operator = 15
+sd_hamilton = 10
+sd_lot = 15
+sd_flex = 10
+sd_wc = 5
+sd_error = 5
+beta_0 = 400
+
+get_estimates_ff_6f <- function(sd_operator = 15,
+                             sd_hamilton = 10,
+                             sd_lot = 15,
+                             sd_flex = 10,
+                             sd_wc = 10,
+                             sd_error = 5,
+                             beta_0 = 400) {
+  operator <- data.frame(operator = c("A", "B", "C"),
+                         operator_i = rnorm(3, 0, sd_operator))
+  hamilton <- data.frame(hamilton = c("1", "2", "3"),
+                         ham_i = rnorm(3, 0, sd_hamilton))
+  lot <- data.frame(lot = c("ach", "fce", "fch"),
+                    lot_i = rnorm(3, 0, sd_lot))
+  flexmap <- data.frame(flexmap = c("1", "2", "3"),
+                        flex_i = rnorm(3, 0, sd_flex))
+  workcell <- data.frame(workcell = c("1", "2"),
+                         wc_i = rnorm(2, 0, sd_wc))
+  
+  sim_data <-
+    tidyr::crossing(operator, hamilton, lot, flexmap, workcell) %>%
+    mutate(e_i = rnorm(nrow(.), 0, sd_error)) %>%
+    mutate(response = beta_0 + operator_i + ham_i + lot_i + flex_i + wc_i + e_i) %>%
+    select(operator, hamilton, lot, flexmap, workcell, response)
+  
+  sim_mod <- lme4::lmer(response ~ (1 | operator) + (1 | hamilton) + (1 | lot) +
+                          (1 | flexmap) + (1 | workcell),
+                        data = sim_data)
+  sd_estimates <- lme4::VarCorr(sim_mod) %>%
+    data.frame() %>%
+    select(grp, sdcor)
+  
+  return_df <- lme4::ranef(sim_mod) %>% 
+  data.frame() %>% 
+  group_by(grpvar) %>% 
+  summarise(avg = mean(condval)) %>% 
+  rename(grp = grpvar) %>% 
+  inner_join(sd_estimates) %>% 
+  mutate(grand_mean = lme4::fixef(sim_mod)) %>% 
+  mutate(perc_cv = 100*(sdcor/(grand_mean))) %>% 
+  mutate(true_cv = case_when(grp == "flexmap" ~ 100*sd_flex/beta_0, 
+                             grp == "hamilton" ~ 100*sd_hamilton/beta_0, 
+                             grp == "lot" ~ 100*sd_lot/beta_0, 
+                             grp == "operator" ~ 100*sd_operator/beta_0, 
+                             grp == "workcell" ~ 100*sd_wc/beta_0), 
+         true_sd = case_when(grp == "flexmap" ~ sd_flex, 
+                             grp == "hamilton" ~ sd_hamilton, 
+                             grp == "lot" ~ sd_lot, 
+                             grp == "operator" ~ sd_operator, 
+                             grp == "workcell" ~ sd_wc))
+  
+    return(return_df)
+  
+}
+```
+
+```{r}
+sim_factorial <- purrr::imap_dfr(1:1000, ~ get_estimates_ff_6f())
+
+sim_factorial %>% 
+  ggplot(.,aes(grp, perc_cv)) + 
+  geom_boxplot() + 
+  geom_point(aes(x = grp, y = true_cv), color = "red") 
+
+sim_factorial %>% 
+  group_by(grp) %>% 
+  filter(perc_cv != 0) %>% 
+  summarise(mean_cv = mean(perc_cv), 
+            true_cv = mean(true_cv))
+
+
+sim_factorial %>% 
+  filter(perc_cv == 0) %>% 
+  nrow(.)/nrow(sim_factorial)
+```
+
+
+
+
+
+
+### Custom   
+
+```{r}
+custom <- function(sd_operator = 15,
+                             sd_hamilton = 10,
+                             sd_lot = 15,
+                             sd_flex = 10,
+                             sd_wc = 5,
+                             sd_error = 5,
+                             beta_0 = 400) {
+  operator <- data.frame(operator = c("A", "B", "C"),
+                         operator_i = rnorm(3, 0, sd_operator))
+  hamilton <- data.frame(hamilton = c("1", "2", "3"),
+                         ham_i = rnorm(3, 0, sd_hamilton))
+  lot <- data.frame(lot = c("ach", "fce", "fch"),
+                    lot_i = rnorm(3, 0, sd_lot))
+  flexmap <- data.frame(flexmap = c("1", "2", "3"),
+                        flex_i = rnorm(3, 0, sd_flex))
+  workcell <- data.frame(workcell = c("1", "2"),
+                         wc_i = rnorm(2, 0, sd_wc))
+  
+  sim_data <-
+    tidyr::crossing(operator, hamilton, lot, flexmap, workcell) %>%
+    mutate(e_i = rnorm(nrow(.), 0, sd_error)) %>%
+    mutate(response = beta_0 + operator_i + ham_i + lot_i + flex_i + wc_i + e_i) %>%
+    select(operator, hamilton, lot, flexmap, workcell, response)
+  
+  sim_mod <- blocked_3_flex %>% 
+    inner_join(sim_data, by = c("lot", "hamilton", "flexmap", "operator", "workcell")) %>% 
+    lme4::lmer(response ~ (1 | operator) + (1 | hamilton) + (1 | lot) +
+                          (1 | flexmap) + (1 | workcell) + (1|Day),
+                        data = .)
+  
+  sd_estimates <- lme4::VarCorr(sim_mod) %>%
+    data.frame() %>%
+    select(grp, sdcor)
+  
+  return_df <- lme4::ranef(sim_mod) %>% 
+  data.frame() %>% 
+  group_by(grpvar) %>% 
+  summarise(avg = mean(condval)) %>% 
+  rename(grp = grpvar) %>% 
+  inner_join(sd_estimates) %>% 
+  mutate(grand_mean = lme4::fixef(sim_mod)) %>% 
+  mutate(perc_cv = 100*(sdcor/(grand_mean))) %>% 
+  mutate(true_cv = case_when(grp == "flexmap" ~ 100*sd_flex/beta_0, 
+                             grp == "hamilton" ~ 100*sd_hamilton/beta_0, 
+                             grp == "lot" ~ 100*sd_lot/beta_0, 
+                             grp == "operator" ~ 100*sd_operator/beta_0, 
+                             grp == "workcell" ~ 100*sd_wc/beta_0), 
+         true_sd = case_when(grp == "flexmap" ~ sd_flex, 
+                             grp == "hamilton" ~ sd_hamilton, 
+                             grp == "lot" ~ sd_lot, 
+                             grp == "operator" ~ sd_operator, 
+                             grp == "workcell" ~ sd_wc))
+  
+    return(return_df)
+  
+}
+```
+
+```{r}
+sim_custom <- purrr::imap_dfr(1:1000, ~ custom())
+
+sim_custom %>% 
+  ggplot(.,aes(grp, perc_cv)) + 
+  geom_boxplot() + 
+  geom_point(aes(x = grp, y = true_cv), color = "red") 
+
+sim_custom %>% 
+  group_by(grp) %>% 
+  filter(perc_cv != 0) %>% 
+  summarise(mean_cv = mean(perc_cv), 
+            true_cv = mean(true_cv))
+
+
+sim_custom %>% 
+  filter(perc_cv == 0) %>% 
+  nrow(.)/nrow(sim_custom)
+```
+
+```{r}
+sim_factorial <- sim_factorial %>% 
+  mutate(type = rep("factorial", nrow(.))) 
+
+sim_custom <- sim_custom %>% 
+  mutate(type = rep("custom", nrow(.)))
+```
+
+
+```{r}
+sim_factorial %>% 
+  bind_rows(sim_custom) %>% 
+  ggplot(.,aes(type, perc_cv)) + 
+  geom_boxplot() + 
+  facet_grid(cols = vars(grp)) + 
+  theme_classic() + 
+  scale_y_continuous(breaks = seq(0, 12, by = 1)) + 
+  labs(title = "Hypothetical estimates of variability over 1000 precision studies")
+```
+
+#### Failures   
+```{r}
+factorial_fail <- sim_factorial %>% 
+  group_by(grp) %>% 
+  filter(perc_cv == 0) %>% 
+  count(grp) %>% 
+  ungroup() %>% 
+  mutate(type = rep("factorial", nrow(.)))
+
+custom_fail <- sim_custom %>% 
+  group_by(grp) %>% 
+  filter(perc_cv == 0) %>% 
+  count(grp) %>% 
+  ungroup() %>% 
+  mutate(type = rep("custom", nrow(.)))
+
+bind_rows(factorial_fail, custom_fail) %>% 
+  filter(grp != "Day") %>% 
+  mutate(prop = 100*(n/1000)) %>% 
+  ggplot(., aes(type, prop)) + 
+  geom_point() + 
+  facet_grid(cols = vars(grp)) + 
+  labs(title = "% of time variance was estimated to be zero") + 
+  scale_y_continuous(breaks = seq(0, 18, by = 2))
+```
+
+
+
+How does that failure rate in workcell go down with %CV?  
+
+```{r}
+iterate_over_custom <- function(sd_wc = 5) {
+  imap_dfr(1:1000, ~ custom(sd_wc = sd_wc))
+} 
+
+
+cvs <- as.double(seq(5, 25, by = 5))
+sim_cvs <- map_dfr(cvs, ~ iterate_over_custom(sd_wc = .x), .id = "cv")
+
+```
+
+```{r}
+sim_cvs %>% 
+  filter(grp == "workcell") %>% 
+  filter(perc_cv == 0) %>% 
+  count(true_cv) %>% 
+  mutate(perc_fail = n/10) %>% 
+  ggplot(.,aes(true_cv, perc_fail)) + 
+  geom_point(size = 2.5) + 
+  labs(title = "% of times variability reduces when the true variability is higher") + 
+  scale_x_continuous(breaks = c(1.25, 2.5, 3.75, 5, 6.25)) + 
+  scale_y_continuous(breaks = seq(2, 12, by = 1)) + 
+  theme_classic()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

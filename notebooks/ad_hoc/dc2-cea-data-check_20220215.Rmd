@@ -1,0 +1,238 @@
+---
+title: "CEA-Distribution"
+author: "Dilsher Singh Dhillon"
+date: "`r format(Sys.time(),'%d %B,%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float : true 
+---
+<style>
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+    background-color: #948DFF;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+
+```{r}
+library(tidyverse) 
+library(plotly)
+freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
+                     '#FECDD1')
+```
+
+
+```{r}
+dc2_data <- readr::read_csv(here::here("data", "raw", "luminex_dc2.csv")) %>% 
+  slice(-1) %>% 
+  janitor::clean_names()
+```
+
+```{r}
+cea <- dc2_data %>% 
+  select(c(x1, x2, x3, cea)) %>% 
+  rename(sample_type = x3)
+```
+# DC2  
+
+## CEA Distribution by group 
+
+**xMAP Data** 
+
+```{r}
+p <- cea %>% 
+  ggplot(.,aes(sample_type, cea)) + 
+  geom_boxplot(outlier.shape = NA, color = freenome_colors[1]) + 
+  geom_jitter(color = freenome_colors[1], alpha = 0.25) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1, size = 10), 
+        axis.title.x = element_text(size = 0)) + 
+  labs(title = "Distribution By Group", 
+       y = "CEA Concentration") 
+
+#p <- plotly_build(p)
+
+#for(i in 1:length(p$x$data)) {
+ # p$x$data[[i]]$marker$opacity = 0
+#}
+
+p
+
+p + scale_y_log10() + 
+  labs(title = "Distribution By Group (Log)", 
+       y = "CEA Concentration") 
+#ggplotly(p)
+```
+
+## Summary Statistics Across Groups 
+
+```{r}
+cea %>% 
+  group_by(sample_type) %>% 
+  summarise(mean = mean(cea, na.rm = TRUE), 
+            p25 = quantile(cea, 0.25), 
+            p50 = quantile(cea, 0.5), 
+            p75 = quantile(cea, 0.75), 
+            p95 = quantile(cea, 0.95)) %>% 
+  tidyr::pivot_longer(., cols = c(mean, p25, p50, p75, p95), 
+                      names_to = "stat", values_to = "conc") %>% 
+  ggplot(., aes(sample_type, conc)) + 
+  geom_point(aes(color = stat)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(title = "Percentiles by group")
+```
+
+
+
+```{r}
+cea %>% 
+  group_by(sample_type) %>% 
+  summarise(mean = mean(cea, na.rm = TRUE), 
+            p25 = quantile(cea, 0.25), 
+            p50 = quantile(cea, 0.5), 
+            p75 = quantile(cea, 0.75), 
+            p95 = quantile(cea, 0.95)) %>% 
+  mutate(across(.cols = c(mean, p25, p50, p75, p95), ~ round(.x, digits = 3))) %>% 
+  DT::datatable()
+```
+
+### Categories by Concentration 
+
+```{r}
+cea %>% 
+  mutate(category = case_when(cea > 0 & cea < 150 ~ "0 - 150", 
+                              cea >=150 & cea < 500 ~ "150 - 500", 
+                              cea >= 500 & cea < 1000 ~ "500 - 1000", 
+                              cea >= 1000 & cea < 2000 ~ "1000 - 2000", 
+                              cea >=2000 ~ "> 2000")) %>% 
+   count(sample_type, category) %>% 
+  DT::datatable()
+```
+
+# Seine 
+
+## CEA distribution 
+
+```{r}
+## data import 
+seine_data <- readr::read_csv(here::here("data", "raw", "luminex_seine.csv")) %>% 
+  janitor::clean_names()
+```
+
+```{r}
+seine_cea <- seine_data %>% 
+  rename(sample_type = x2, 
+         cea = ceacam5) %>% 
+  select(sample_type, cea) 
+
+p <- seine_cea %>% 
+  ggplot(.,aes(sample_type, cea)) + 
+  geom_boxplot(outlier.shape = NA, color = freenome_colors[1]) + 
+  geom_jitter(color = freenome_colors[1], alpha = 0.25) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1, size = 10), 
+        axis.title.x = element_text(size = 0)) + 
+  labs(title = "Seine Distribution By Group", 
+       y = "CEA Concentration") 
+
+#p <- plotly_build(p)
+
+#for(i in 1:length(p$x$data)) {
+ # p$x$data[[i]]$marker$opacity = 0
+#}
+
+p
+
+p + scale_y_log10() + 
+  labs(title = "Seine Distribution By Group (Log)", 
+       y = "CEA Concentration") 
+```
+
+
+## Summary Statistics Across Groups 
+
+```{r}
+seine_cea %>% 
+  group_by(sample_type) %>% 
+  summarise(mean = mean(cea, na.rm = TRUE), 
+            p25 = quantile(cea, 0.25), 
+            p50 = quantile(cea, 0.5), 
+            p75 = quantile(cea, 0.75), 
+            p95 = quantile(cea, 0.95)) %>% 
+  tidyr::pivot_longer(., cols = c(mean, p25, p50, p75, p95), 
+                      names_to = "stat", values_to = "conc") %>% 
+  ggplot(., aes(sample_type, conc)) + 
+  geom_point(aes(color = stat)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(title = "Percentiles by group")
+```
+
+
+
+```{r}
+seine_cea %>% 
+  group_by(sample_type) %>% 
+  summarise(mean = mean(cea, na.rm = TRUE), 
+            p25 = quantile(cea, 0.25), 
+            p50 = quantile(cea, 0.5), 
+            p75 = quantile(cea, 0.75), 
+            p95 = quantile(cea, 0.95)) %>% 
+  mutate(across(.cols = c(mean, p25, p50, p75, p95), ~ round(.x, digits = 3))) %>% 
+  DT::datatable()
+```
+
+### Categories by Concentration 
+
+```{r}
+seine_cea %>% 
+  mutate(category = case_when(cea > 0 & cea < 150 ~ "0 - 150", 
+                              cea >=150 & cea < 500 ~ "150 - 500", 
+                              cea >= 500 & cea < 1000 ~ "500 - 1000", 
+                              cea >= 1000 & cea < 2000 ~ "1000 - 2000", 
+                              cea >=2000 ~ "> 2000")) %>% 
+   count(sample_type, category) %>% 
+  DT::datatable()
+```
+
+
+
+
+```
+gsutil cp -r /home/ddhillon/projects/beta-av-testing/notebooks/ad_hoc/outputs/cea-dc2-distribution.html gs://freenome-user-data-ddhillon/outputs/
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

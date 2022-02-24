@@ -1,0 +1,514 @@
+---
+title: "QC-Strategy-Simulation"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+### Introduction    
+
+
+
+
+
+
+
+
+
+Explore the following 2 rules in different situations  
+1. 13S rule  
+
+2. R4S-like: two measurements (across levels for the same assay) in the same batch have a 4 standard deviation difference (such as one exceeding 2 SD above the mean, and another exceeding 2 SD below the mean)   
+
+3. Two or measurements (across levels for the same assay) in the same batch have exceeded 2 standard deviations on the same side of the mean   
+
+
+
+
+```{r}
+library(mvtnorm)
+library(tidyverse)
+library(furrr)
+```
+
+```{r}
+plan(multisession, workers = 6)
+```
+
+
+```{r}
+freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
+                   '#FECDD1')
+```
+
+
+
+```{r}
+proteins <- 7  
+controls <- 3  
+```
+
+
+#### Rule 1  
+
+2 controls exceeding 3SD in either direction. 
+
+```{r eval=FALSE, include=FALSE}
+mean_vec <- c(rnorm(1), 3 * rnorm(1), 6 * rnorm(1))
+sigma_vec <-
+  c(rnorm(1, 1, 0.05), 3 * rnorm(1, 1, 0.05), 5 * rnorm(1, 1, 0.05))
+variance_vec <- sigma_vec ^ 2
+
+rho <- 0.4 ## moderate correlation
+
+
+
+cov_matrix <-
+  matrix(
+    c(
+      variance_vec[1],
+      rho * sigma_vec[1] * sigma_vec[2],
+      rho * sigma_vec[1] * sigma_vec[3],
+      rho * sigma_vec[1] * sigma_vec[2],
+      variance_vec[2],
+      rho * sigma_vec[2] * sigma_vec[3],
+      rho * sigma_vec[1] * sigma_vec[3],
+      rho * sigma_vec[2] * sigma_vec[3],
+      variance_vec[3]
+    ),
+    nrow = 3,
+    ncol = 3
+  )
+
+
+
+
+#Using these above, we 
+# 1. Generate 20 samples from the multivariate normal distribution   
+# 2. Calculate the 3SD limit  
+
+#**1**   
+
+measurands <- rmvnorm(20, mean = mean_vec, sigma = cov_matrix)
+
+
+
+
+#**2**   
+
+sd_limits <- apply(measurands, MARGIN = 2, FUN = sd)
+mean_limit <- apply(measurands, MARGIN = 2, FUN = mean)
+
+# Generate 1000 RVs 7 times or generate 7000 RVs?  
+
+
+sim_measurands <- rmvnorm(1e3, mean = mean_vec, sigma = cov_matrix)
+
+#tmp <- replicate(7, rmvnorm(1e3, mean = mean_vec, sigma = cov_matrix))
+
+sim_measurands %>% 
+  data.frame() %>% 
+  rename(x = X1, y = X2, z = X3) %>% 
+  mutate(x_3sd = case_when(x >  + 3*sd_limits[1] | x < x - 3*sd_limits[1] ~ 1, 
+                                  is.double(x) ~ 0), 
+         y_3sd = case_when(y > y + 3*sd_limits[2] | y < y - 3*sd_limits[2] ~ 1, 
+                                  is.double(y) ~ 0), 
+         z_3sd = case_when(z > z + 3*sd_limits[3] | z < z -3*sd_limits[3] ~ 1,
+                                  is.double(z) ~ 0)) %>% 
+  mutate(total_sd = x_3sd + y_3sd + z_3sd) %>% 
+  filter(total_sd >= 1) %>% 
+  nrow(.)/(nrow(sim_measurands)/100)
+```
+
+
+
+**function for 13s**   
+
+```{r}
+single_13s_simulation <-
+  function(correlation = 0.4,
+           n = 20,
+           batches = 1000,
+           proteins = 7) {
+    mean_vec <- c(rnorm(1), 3 * rnorm(1), 6 * rnorm(1))
+    sigma_vec <-
+      c(rnorm(1, 1, 0.05), 3 * rnorm(1, 1, 0.05), 5 * rnorm(1, 1, 0.05))
+    variance_vec <- sigma_vec ^ 2
+    
+    rho <- correlation ## moderate correlation
+    
+    cov_matrix <-
+      matrix(
+        c(
+          variance_vec[1],
+          rho * sigma_vec[1] * sigma_vec[2],
+          rho * sigma_vec[1] * sigma_vec[3],
+          rho * sigma_vec[1] * sigma_vec[2],
+          variance_vec[2],
+          rho * sigma_vec[2] * sigma_vec[3],
+          rho * sigma_vec[1] * sigma_vec[3],
+          rho * sigma_vec[2] * sigma_vec[3],
+          variance_vec[3]
+        ),
+        nrow = 3,
+        ncol = 3
+      )
+    
+    ## generate spec limits
+    measurands <- rmvnorm(n, mean = mean_vec, sigma = cov_matrix)
+    sd_limits <- apply(measurands, MARGIN = 2, FUN = sd)
+    mean_limit <- apply(measurands, MARGIN = 2, FUN = mean)
+
+    # Generate 1000 RVs 7 times or generate 7000 RVs?
+    
+    sim_measurands <-
+      rmvnorm(batches, mean = mean_vec, sigma = cov_matrix)
+    
+    num_times <- sim_measurands %>%
+      data.frame() %>%
+      rename(x = X1, y = X2, z = X3) %>%
+      mutate(x_upper = mean_limit[1] + 3 * sd_limits[1], 
+             x_lower = mean_limit[1] - 3 * sd_limits[1], 
+             y_upper = mean_limit[2] + 3 * sd_limits[2], 
+             y_lower = mean_limit[2] - 3 * sd_limits[2], 
+             z_upper = mean_limit[3] + 3 * sd_limits[3], 
+             z_lower = mean_limit[3] - 3 * sd_limits[3]) %>% 
+      mutate(
+        x_3sd = case_when(x > x_upper | x < x_lower ~ 1,
+                          is.double(x) ~ 0),
+        y_3sd = case_when(y > y_upper |
+                            y < y_lower ~ 1,
+                          is.double(y) ~ 0),
+        z_3sd = case_when(z > z_upper |
+                            z < z_lower ~ 1,
+                          is.double(z) ~ 0)
+      ) %>%
+      mutate(total_sd = x_3sd + y_3sd + z_3sd) %>%
+      filter(total_sd >= 1) %>%
+      nrow(.) / (batches / 100)
+    return(num_times*proteins)
+  }
+
+```
+
+**Iteration over multiple correlations and initial data generation**   
+
+```{r}
+parameters <- tidyr::crossing(correlation = seq(0.2, 0.8, by = 0.1), 
+                n = seq(10, 50, by = 5))
+```
+
+
+```{r}
+iterate_over_params <- function(params = parameters, i = 1) {
+  imap_dbl(1:1000, ~single_13s_simulation(correlation = parameters$correlation[i], 
+                                            n = parameters$n[i])) %>% 
+    mean()
+}
+
+
+fps_13s <- furrr::future_imap_dbl(1:nrow(parameters), ~ 
+                                    iterate_over_params(params = parameters, 
+                                                   i = .x), 
+                              .options = furrr_options(seed = TRUE))
+```
+
+```{r}
+fps_13s %>% 
+  data.frame() %>% 
+  janitor::clean_names() %>% 
+  rename(fp_rate = x) %>% 
+  bind_cols(parameters) %>% 
+  rename(number_experiments = n) %>% 
+  ggplot(.,aes(correlation, fp_rate)) + 
+  geom_point(aes(color = number_experiments), 
+             size = 2.5) + 
+  scale_color_gradientn(colors = c(freenome_colors[1], 
+                                   freenome_colors[2], 
+                                   freenome_colors[3])) + 
+  theme_classic() + 
+  labs(title = "False alarm % ", 
+       subtitle = "Function of correlation and batches(n) used to set limits")
+```
+
+
+
+
+#### Rule 3   
+
+```{r eval=FALSE, include=FALSE}
+
+```
+
+
+
+Let's write a function for simulating the data  
+
+##### Assumptions   
+
+1. One assay, 3 controls 
+  a. **Mean**  
+  Med control = 3*Low Control  
+  High control = 6*Low Control  
+  b. **Variance**  
+  Assume similar distribution for variance of each control (over optimisitic - low controls tend to be more noisy?)   
+
+2. Correlation - explored a range of positive correlations  
+3. Batches used to set the spec limits  - explored 10 - 30  
+
+
+```{r}
+single_assay_simulation <-
+  function(correlation = 0.4,
+           n = 20,
+           batches = 1000, proteins = 7) {
+    mean_vec <- c(rnorm(1), 3 * rnorm(1), 6 * rnorm(1))
+    sigma_vec <-
+      c(rnorm(1, 1, 0.05), 3 * rnorm(1, 1, 0.05), 5 * rnorm(1, 1, 0.05))
+    variance_vec <- sigma_vec ^ 2
+    
+    rho <- correlation ## moderate correlation
+    
+    cov_matrix <-
+      matrix(
+        c(
+          variance_vec[1],
+          rho * sigma_vec[1] * sigma_vec[2],
+          rho * sigma_vec[1] * sigma_vec[3],
+          rho * sigma_vec[1] * sigma_vec[2],
+          variance_vec[2],
+          rho * sigma_vec[2] * sigma_vec[3],
+          rho * sigma_vec[1] * sigma_vec[3],
+          rho * sigma_vec[2] * sigma_vec[3],
+          variance_vec[3]
+        ),
+        nrow = 3,
+        ncol = 3
+      )
+    
+    ## generate spec limits
+    measurands <- rmvnorm(n, mean = mean_vec, sigma = cov_matrix)
+    sd_limits <- apply(measurands, MARGIN = 2, FUN = sd)
+    mean_limit <- apply(measurands, MARGIN = 2, FUN = mean)
+    # Generate 1000 RVs 7 times or generate 7000 RVs?
+    
+    sim_measurands <-
+      rmvnorm(batches, mean = mean_vec, sigma = cov_matrix)
+    
+    num_times <- sim_measurands %>%
+      data.frame() %>%
+      rename(x = X1, y = X2, z = X3) %>%
+      mutate(x_upper = mean_limit[1] + 2 * sd_limits[1], 
+             x_lower = mean_limit[1] - 2 * sd_limits[1], 
+             y_upper = mean_limit[2] + 2 * sd_limits[2], 
+             y_lower = mean_limit[2] - 2 * sd_limits[2], 
+             z_upper = mean_limit[3] + 2 * sd_limits[3], 
+             z_lower = mean_limit[3] - 2 * sd_limits[3]) %>% 
+      mutate(
+        x_2sd = case_when(x > x_upper ~ 1,
+                          x < x_lower ~ -1,
+                          is.double(x) ~ 0),
+        y_2sd = case_when(y > y_upper ~ 1,
+                          y < y_lower ~ -1,
+                          is.double(y) ~ 0),
+        z_2sd = case_when(z > z_upper ~ 1,
+                          z < z_lower ~ -1,
+                          is.double(z) ~ 0)
+      ) %>%
+      mutate(total_sd = x_2sd + y_2sd + z_2sd) %>%
+      filter(total_sd >= 2) %>%
+      nrow(.) / (batches / 100)
+    return(num_times*proteins)
+  }
+
+```
+
+**Iteration over multiple correlations and initial data generation**   
+
+```{r}
+parameters <- tidyr::crossing(correlation = seq(0.2, 0.8, by = 0.1), 
+                n = seq(10, 50, by = 5))
+```
+
+
+```{r}
+iterate_over_params <- function(params = parameters, i = 1) {
+  imap_dbl(1:1000, ~single_assay_simulation(correlation = parameters$correlation[i], 
+                                            n = parameters$n[i])) %>% 
+    mean()
+}
+
+
+fps <- furrr::future_imap_dbl(1:nrow(parameters), ~ iterate_over_params(params = parameters, 
+                                                   i = .x), 
+                              .options = furrr_options(seed = TRUE))
+```
+
+
+```{r}
+fps %>% 
+  data.frame() %>% 
+  janitor::clean_names() %>% 
+  rename(fp_rate = x) %>% 
+  bind_cols(parameters) %>% 
+  rename(number_experiments = n) %>% 
+  ggplot(.,aes(correlation, fp_rate)) + 
+  geom_point(aes(color = number_experiments), 
+             size = 2.5) + 
+  scale_color_gradientn(colors = c(freenome_colors[1], 
+                                   freenome_colors[2], 
+                                   freenome_colors[3])) + 
+  theme_classic() + 
+  labs(title = "False alarm % for single assay(Rule 2)", 
+       subtitle = "Function of correlation and batches(n) used to set limits")
+```
+
+
+
+
+
+
+#### Rule 2    
+
+We will count the number of times any of these occurs  
+
+1. X > 2SD and Y < 2SD 
+2. X > 2SD and Z < 2SD  
+3. X < 2SD and Y > 2SD  
+4. X < 2SD and Z > 2SD  
+5. Y < 2SD and Z > 2SD 
+6. Y > 2SD and Z < 2SD   
+
+
+```{r}
+r4s_assay_simulation <-
+  function(correlation = 0.4,
+           n = 20,
+           batches = 1000, 
+           proteins = 7) {
+    mean_vec <- c(rnorm(1), 3 * rnorm(1), 6 * rnorm(1))
+    sigma_vec <-
+      c(rnorm(1, 1, 0.05), 3 * rnorm(1, 1, 0.05), 5 * rnorm(1, 1, 0.05))
+    variance_vec <- sigma_vec ^ 2
+    
+    rho <- correlation ## moderate correlation
+    
+    cov_matrix <-
+      matrix(
+        c(
+          variance_vec[1],
+          rho * sigma_vec[1] * sigma_vec[2],
+          rho * sigma_vec[1] * sigma_vec[3],
+          rho * sigma_vec[1] * sigma_vec[2],
+          variance_vec[2],
+          rho * sigma_vec[2] * sigma_vec[3],
+          rho * sigma_vec[1] * sigma_vec[3],
+          rho * sigma_vec[2] * sigma_vec[3],
+          variance_vec[3]
+        ),
+        nrow = 3,
+        ncol = 3
+      )
+    
+    ## generate spec limits
+    measurands <- rmvnorm(n, mean = mean_vec, sigma = cov_matrix)
+    sd_limits <- apply(measurands, MARGIN = 2, FUN = sd)
+    mean_limit <- apply(measurands, MARGIN = 2, FUN = mean) 
+    # Generate 1000 RVs 7 times or generate 7000 RVs?
+    
+    sim_measurands <-
+      rmvnorm(batches, mean = mean_vec, sigma = cov_matrix)
+    
+    
+    num_times <- sim_measurands %>%
+      data.frame() %>%
+      rename(x = X1, y = X2, z = X3) %>%
+      mutate(x_upper = mean_limit[1] + 2 * sd_limits[1], 
+             x_lower = mean_limit[1] - 2 * sd_limits[1], 
+             y_upper = mean_limit[2] + 2 * sd_limits[2], 
+             y_lower = mean_limit[2] - 2 * sd_limits[2], 
+             z_upper = mean_limit[3] + 2 * sd_limits[3], 
+             z_lower = mean_limit[3] - 2 * sd_limits[3]) %>% 
+      mutate(
+        x_2sd = case_when(x > x_upper ~ 1,
+                          x < x_lower ~ -1,
+                          is.double(x) ~ 0),
+        y_2sd = case_when(y > y_upper ~ 1,
+                          y < y_lower ~ -1,
+                          is.double(y) ~ 0),
+        z_2sd = case_when(z > z_upper ~ 1,
+                          z < z_lower ~ -1,
+                          is.double(z) ~ 0)
+      ) %>%
+      mutate(
+        sd_4_opposite = case_when(
+          x_2sd == 1 & y_2sd == -1 ~ "yes",
+          x_2sd == 1 &
+            z_2sd == -1 ~ "yes",
+          x_2sd == -1 &
+            y_2sd == 1 ~ "yes",
+          x_2sd == -1 &
+            z_2sd == 1 ~ "yes",
+          y_2sd == -1 &
+            z_2sd == 1 ~ "yes",
+          y_2sd == 1 &
+            z_2sd == -1 ~ "yes"
+        )
+      ) %>%
+      filter(sd_4_opposite == "yes") %>%
+      nrow(.) / (batches / 100)
+    
+    return(num_times*proteins)
+    
+  }
+```
+
+
+
+```{r}
+r4s_iterate_over_params <- function(params = parameters, i = 1) {
+  imap_dbl(1:1000, ~r4s_assay_simulation(correlation = parameters$correlation[i], 
+                                            n = parameters$n[i])) %>% 
+    mean()
+}
+
+
+r4s_fps <- furrr::future_imap_dbl(1:nrow(parameters), ~ r4s_iterate_over_params(params = parameters, 
+                                                   i = .x), 
+                                  .options = furrr_options(seed = TRUE))
+```
+
+R4S-like: two measurements (across levels for the same assay) in the same batch have a 4 standard deviation difference (such as one exceeding 2 SD above the mean, and another exceeding 2 SD below the mean).
+Two or measurements (across levels for the same assay) in the same batch have exceeded 2 standard deviations on the same side of the mean.
+
+
+
+```{r}
+r4s_fps %>% 
+  data.frame() %>% 
+  janitor::clean_names() %>% 
+  rename(fp_rate = x) %>% 
+  bind_cols(parameters) %>% 
+  ggplot(.,aes(correlation, fp_rate)) + 
+  geom_point(aes(color = n), 
+             size = 2.5) + 
+  scale_color_gradientn(colors = c(freenome_colors[1], freenome_colors[2], freenome_colors[3])) + 
+  theme_classic() + 
+  labs(title = "False alarm % for single assay R4S Like Rule", 
+       subtitle = "Function of correlation and batches(n) used to set limits")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

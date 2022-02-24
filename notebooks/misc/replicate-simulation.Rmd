@@ -1,0 +1,193 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r}
+library(tidyverse) 
+freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
+                   '#FECDD1')
+library(plotly)
+```
+
+
+### Scenarios   
+
+   
+
+True control concentration ->  4pg/ml   
+inter-cv -> 15 %  
+intra-cv -> 5 %   
+
+The 'between' plate SD will be Inter-CVxTrueMean/100  - QUANTITY WE WANT TO ESIMTATE/SET OUR LIMITS ON   
+
+```{r}
+true_mean <- 4  
+inter_cv <- 15  
+intra_cv <- 5  
+between_plate_sd <- inter_cv*true_mean/100 
+within_plate_sd <- intra_cv*true_mean/100 
+```
+```{r}
+plates <- 3
+plate <- data.frame(plate = seq(1:plates), 
+                    plate_i = rnorm(plates, true_mean, between_plate_sd))
+
+plate
+```
+```{r}
+reps <- 4
+plate_rep <- data.frame(rep_type = seq(1:reps))
+
+sim_plates <- tidyr::crossing(plate, plate_rep) %>% 
+  mutate(response = plate_i + rnorm(nrow(.), 0, within_plate_sd)) 
+sim_plates
+```
+
+
+
+```{r}
+simulating_xmap_data <- function(plates_num = 3,
+                                 reps_num = 8,
+                                 true_mean = 4,
+                                 inter_cv = 15,
+                                 intra_cv = 5) {
+  
+  between_plate_sd <- inter_cv*true_mean / 100
+  within_plate_sd <- intra_cv*true_mean / 100
+  
+  plates <- plates_num
+  
+  plate <- data.frame(
+    plate = seq(1:plates),
+    plate_i = rnorm(plates, true_mean, between_plate_sd)
+  )
+  
+  reps <- reps_num
+  plate_rep <- data.frame(rep_type = seq(1:reps))
+  
+  sim_plates <- tidyr::crossing(plate, plate_rep) %>%
+    mutate(response = plate_i + rnorm(nrow(.), 0, within_plate_sd))
+  
+  
+  sd_all <- sim_plates %>%
+    summarise(sd = sd(response)) %>%
+    pull()
+  
+  sd_plate <- sim_plates %>%
+    group_by(plate) %>%
+    summarise(mean = mean(response)) %>%
+    summarise(sd = sd(mean)) %>%
+    select(sd) %>%
+    pull()
+  
+  vec <- data.frame(sd_all_reps = sd_all, sd_all_plates = sd_plate)
+  return(vec)
+  
+}
+```
+
+**Fix plates, vary reps**   
+
+```{r}
+sim_over_reps <- imap_dfr(1:1000, ~ map_dfr(4:16, ~ simulating_xmap_data(reps_num = .x), .id = "reps"), 
+         .id = "sim") %>% 
+  mutate(reps = as.double(reps)) %>% 
+  mutate(reps = reps + 3)
+
+
+sim_over_reps %>% 
+  ggplot(.,aes(reps, sd_all_reps, group = reps)) + 
+  geom_boxplot() + 
+  geom_hline(yintercept = between_plate_sd) + 
+  labs(subtitle = "4 - 16 replicates on 4 plates", 
+       title = "Estimate SD using within plate repeats", 
+       y = "estimated SD") 
+
+sim_over_reps %>% 
+  ggplot(.,aes(reps, sd_all_plates, group = reps)) + 
+  geom_boxplot() + 
+  geom_hline(yintercept = between_plate_sd) + 
+  labs(subtitle = "4 - 16 replicates on 4 plates", 
+       title = "Estimate SD using plate averags", 
+       y = "estimated SD")
+```
+```{r}
+sim_over_plates <- imap_dfr(1:1000, ~ map_dfr(3:20, ~ 
+                                                simulating_xmap_data(plates_num = .x), 
+                                            .id = "plates"), 
+         .id = "sim") %>% 
+  mutate(plates = as.double(plates)) %>% 
+  mutate(plates = plates + 3)
+```
+
+**Fix reps, vary plates**   
+
+```{r}
+sim_over_plates %>% 
+  ggplot(.,aes(plates, sd_all_plates, group = plates)) + 
+  geom_boxplot() + 
+  geom_hline(yintercept = between_plate_sd) + 
+  labs(subtitle = "8 repeats on each plate", 
+       title = "Estimate SD using between plate repeats", 
+       y = "Estimated SD") + 
+  scale_x_continuous(breaks = seq(from = 4, to = 20, by = 1))
+
+```
+
+
+**Vary both plates and reps**    
+
+
+```{r}
+params <- crossing(reps = seq(from = 4, to = 12, 
+                              by = 2), 
+                   plates = seq(from  = 3, to = 15, by = 3), 
+                   inter_cv = seq(from = 5, to = 20, by = 5))
+
+sim_param <- imap_dfr(1:100, ~ params %>% 
+  rowwise() %>% 
+  summarise(results = simulating_xmap_data(plates_num = plates, 
+                                           reps_num = reps, 
+                                           inter_cv = inter_cv)) %>% 
+  unnest(cols = c(results)) %>% 
+  bind_cols(params), 
+  .id = "sim")
+```
+
+
+```{r}
+sim_param %>% 
+  ggplot(.,aes(reps, sd_all_plates, group = reps)) + 
+  geom_boxplot() + 
+  facet_grid(cols = vars(plates), rows = vars(inter_cv), 
+             labeller = label_both) + 
+  scale_x_continuous(breaks = seq(from =4, to = 12, by = 2))
+```
+
+
+
+
+```{r}
+p <- sim_param %>% 
+  group_by(reps, plates) %>% 
+  summarise(sd_reps = mean(sd_all_reps), 
+            sd_plates = mean(sd_all_plates)) %>% 
+  ggplot(., aes(reps, sd_plates)) + 
+  geom_point(aes(color = plates)) + 
+  scale_color_gradientn(colours = c(freenome_colors[1], freenome_colors[2], freenome_colors[3])) + 
+  geom_hline(yintercept = between_plate_sd) + 
+  labs(y = "Estimated SD")
+
+ggplotly(p)
+```
+
+
+
+
+
+
+

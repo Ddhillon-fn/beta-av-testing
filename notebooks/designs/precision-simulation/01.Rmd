@@ -1,0 +1,976 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(lme4)
+```
+
+## Full Factorial   
+
+```{r}
+full_factorial <- tidyr::crossing(operator = c("A", "B", "C"), 
+                                  hamilton = c("1", "2", "3"), 
+                                  lot = c("ach", "fch", "fce"), 
+                flexmap = c("1", "2", "3"), 
+                workcell = c("1", "2")) 
+```
+
+## 24 run Design expert  
+I-optimal design  
+
+```{r}
+optimal <- tibble::tribble(
+                              ~lot, ~workcell, ~hamilton, ~operator, ~flexmap,
+                                "FCE",         "2",         "2",         "O1",        "2",
+                                "FCH",         "1",         "1",         "O2",        "2",
+                                "FCH",         "2",         "2",         "O1",        "1",
+                                "ACH",         "2",         "1",         "O3",        "2",
+                                "FCH",         "1",         "2",         "O1",        "3",
+                                "FCE",         "2",         "2",         "O1",        "2",
+                                "ACH",         "1",         "2",         "O3",        "3",
+                                "ACH",         "1",         "3",         "O1",        "2",
+                                "ACH",         "2",         "2",         "O2",        "3",
+                                "FCH",         "1",         "2",         "O3",        "2",
+                                "ACH",         "1",         "3",         "O1",        "3",
+                                "FCE",         "2",         "3",         "O3",        "3",
+                                "FCE",         "2",         "1",         "O1",        "3",
+                                "ACH",         "1",         "1",         "O1",        "1",
+                                "FCE",         "1",         "3",         "O2",        "2",
+                                "FCH",         "2",         "3",         "O1",        "2",
+                                "FCE",         "1",         "1",         "O3",        "1",
+                                "FCH",         "2",         "1",         "O2",        "3",
+                                "FCE",         "1",         "2",         "O2",        "1",
+                                "ACH",         "2",         "3",         "O2",        "1",
+                                "FCH",         "1",         "3",         "O2",        "3",
+                                "ACH",         "2",         "1",         "O3",        "2",
+                                "FCH",         "2",         "3",         "O3",        "1",
+                                "FCE",         "1",         "1",         "O3",        "1"
+                            ) %>% 
+  mutate(lot = tolower(lot), 
+         operator = case_when(operator == "O1" ~ "A", 
+                              operator == "O2" ~ "B", 
+                              operator == "O3" ~ "C"))
+
+
+
+optimal <- tibble::tribble(
+                                             ~lot, ~workcell, ~hamilton, ~operator, ~flexmap,
+                                           "FCE",  1L,  1L, "O3",  2L,
+                                           "FCH",  2L,  3L, "O1",  3L,
+                                           "ACH",  1L,  2L, "O1",  2L,
+                                           "ACH",  1L,  3L, "O1",  1L,
+                                           "ACH",  1L,  1L, "O2",  3L,
+                                           "FCE",  2L,  2L, "O2",  3L,
+                                           "FCH",  2L,  1L, "O1",  2L,
+                                           "FCH",  1L,  2L, "O2",  1L,
+                                           "FCE",  1L,  2L, "O1",  3L,
+                                           "FCE",  2L,  1L, "O2",  2L,
+                                           "FCE",  2L,  3L, "O2",  1L,
+                                           "FCE",  1L,  2L, "O1",  3L,
+                                           "FCH",  2L,  2L, "O3",  2L,
+                                           "FCH",  1L,  2L, "O2",  2L,
+                                           "ACH",  2L,  3L, "O2",  2L,
+                                           "FCE",  2L,  1L, "O1",  1L,
+                                           "FCH",  1L,  1L, "O3",  1L,
+                                           "ACH",  2L,  2L, "O3",  1L,
+                                           "ACH",  2L,  2L, "O3",  1L,
+                                           "FCE",  1L,  3L, "O3",  2L,
+                                           "FCH",  1L,  1L, "O2",  1L,
+                                           "ACH",  1L,  1L, "O2",  3L,
+                                           "FCH",  1L,  3L, "O3",  3L,
+                                           "ACH",  2L,  1L, "O3",  3L
+                                           ) %>% 
+                           mutate(lot = tolower(lot), 
+         operator = case_when(operator == "O1" ~ "A", 
+                              operator == "O2" ~ "B", 
+                              operator == "O3" ~ "C")) %>% 
+  mutate_all(., ~ as.character(.x))
+
+```
+
+
+**Current design**   
+
+```{r}
+current_des <- tibble::tribble(
+  ~lot, ~hamilton, ~workcell, ~flexmap, ~operator,
+  "ach", "3", "1", "1", "C", 
+  "fch", "3", "1", "1", "C", 
+  "fce", "3", "1", "1", "C", 
+  "fce", "2", "2", "3", "A", 
+  "fce", "2", "2", "3", "B", 
+  "fce", "2", "2", "3", "C", 
+  "ach", "2", "2", "4", "C", 
+  "ach", "2", "1", "4", "C",
+  "fce", "1", "2", "5", "B", 
+  "fce", "2", "2", "5", "B", 
+  "fce", "3", "2", "5", "B",
+  "fch", "1", "1", "1", "A",
+  "fch", "1", "1", "2", "A",
+  "fch", "1", "1", "3", "A",
+  "fch", "1", "1", "4", "A",
+  "fch", "1", "1", "5", "A",
+  "fch", "1", "1", "6", "A",
+  "ach", "1", "2", "2", "A", 
+  "ach", "1", "1", "3", "B", 
+  "ach", "3", "2", "5", "C",
+  "ach", "2", "1", "6", "A",
+  "ach", "3", "2", "2", "B",
+  "ach", "1", "2", "6", "C", 
+  "ach", "3", "2", "2", "A", 
+  "fch", "3", "2", "4", "B", 
+  "fch", "2", "2", "6", "C", 
+  "fch", "2", "2", "1", "B", 
+  "fce", "2", "1", "2", "B", 
+  "fce", "3", "1", "4", "C", 
+  "fce", "3", "1", "6", "B"
+
+)
+```
+
+
+
+```{r}
+full_factorial_6_flex <- tidyr::crossing(operator = c("A", "B", "C"), 
+                                  hamilton = c("H1", "H2", "H3"), 
+                                  lot = c("ach", "fch", "fce"), 
+                flexmap = c("F1", "F2", "F3", "F4", "F5", "F6"), 
+                workcell = c("1", "2")) 
+full_factorial_6_flex %>% 
+  ggplot(aes(operator, workcell)) + 
+  geom_point() + 
+  facet_grid(rows = vars(hamilton, lot), cols = vars(flexmap)) 
+
+current_des %>% 
+  ggplot(aes(operator, workcell)) + 
+  geom_point() + 
+  facet_grid(rows = vars(hamilton, lot), cols = vars(flexmap)) 
+```
+
+
+
+
+How does an optimal design look with 6 flexmaps? 
+
+```{r}
+panel_1 <- tibble::tribble(
+                              ~lot,  ~hamilton,  ~flexmap, ~operator, ~workcell,
+                            "ach", "H2", "F4", "C",  "2",
+                            "fch", "H2", "F3", "B",  "1",
+                            "fce", "H3", "F4", "A",  "1",
+                            "fch", "H1", "F5", "C",  "2",
+                            "ach", "H1", "F1", "A",  "1",
+                            "fce", "H2", "F6", "C",  "1",
+                            "fce", "H2", "F1", "B",  "2",
+                            "fce", "H1", "F2", "C",  "1",
+                            "ach", "H2", "F5", "A",  "1",
+                            "fch", "H2", "F2", "A",  "1",
+                            "fch", "H3", "F6", "A",  "2",
+                            "fce", "H1", "F3", "A",  "2",
+                            "fce", "H3", "F5", "B",  "1",
+                            "ach", "H3", "F2", "B",  "2",
+                            "fch", "H1", "F4", "B",  "1",
+                            "ach", "H1", "F6", "B",  "1",
+                            "fch", "H3", "F1", "C",  "1",
+                            "ach", "H3", "F3", "C",  "1"
+                            )
+panel_1 %>% 
+  ggplot(aes(operator, workcell)) + 
+  geom_point() + 
+  facet_grid(rows = vars(hamilton, lot), cols = vars(flexmap)) 
+```
+
+
+
+
+
+## Compare the 6Flex with current 6 flex?   
+
+### FF 6 Flex
+```{r}
+sd_operator = 15
+sd_hamilton = 10
+sd_lot = 15
+sd_flex = 10
+sd_wc = 5
+sd_error = 5
+beta_0 = 400
+
+get_estimates_ff_6f <- function(sd_operator = 15,
+                             sd_hamilton = 10,
+                             sd_lot = 15,
+                             sd_flex = 10,
+                             sd_wc = 10,
+                             sd_error = 5,
+                             beta_0 = 400) {
+  operator <- data.frame(operator = c("A", "B", "C"),
+                         operator_i = rnorm(3, 0, sd_operator))
+  hamilton <- data.frame(hamilton = c("H1", "H2", "H3"),
+                         ham_i = rnorm(3, 0, sd_hamilton))
+  lot <- data.frame(lot = c("l1", "l2", "l3"),
+                    lot_i = rnorm(3, 0, sd_lot))
+  flexmap <- data.frame(flexmap = c("F1", "F2", "F3", "F4", "F5", "F6"),
+                        flex_i = rnorm(3, 0, sd_flex))
+  workcell <- data.frame(workcell = c("1", "2"),
+                         wc_i = rnorm(2, 0, sd_wc))
+  
+  sim_data <-
+    tidyr::crossing(operator, hamilton, lot, flexmap, workcell) %>%
+    mutate(e_i = rnorm(nrow(.), 0, sd_error)) %>%
+    mutate(response = beta_0 + operator_i + ham_i + lot_i + flex_i + wc_i + e_i) %>%
+    select(operator, hamilton, lot, flexmap, workcell, response)
+  
+  sim_mod <- lme4::lmer(response ~ (1 | operator) + (1 | hamilton) + (1 | lot) +
+                          (1 | flexmap) + (1 | workcell),
+                        data = sim_data)
+  sd_estimates <- VarCorr(sim_mod) %>%
+    data.frame() %>%
+    select(grp, sdcor)
+  
+  return_df <- ranef(sim_mod) %>% 
+  data.frame() %>% 
+  group_by(grpvar) %>% 
+  summarise(avg = mean(condval)) %>% 
+  rename(grp = grpvar) %>% 
+  inner_join(sd_estimates) %>% 
+  mutate(grand_mean = fixef(sim_mod)) %>% 
+  mutate(perc_cv = 100*(sdcor/(grand_mean))) %>% 
+  mutate(true_cv = case_when(grp == "flexmap" ~ 100*sd_flex/beta_0, 
+                             grp == "hamilton" ~ 100*sd_hamilton/beta_0, 
+                             grp == "lot" ~ 100*sd_lot/beta_0, 
+                             grp == "operator" ~ 100*sd_operator/beta_0, 
+                             grp == "workcell" ~ 100*sd_wc/beta_0), 
+         true_sd = case_when(grp == "flexmap" ~ sd_flex, 
+                             grp == "hamilton" ~ sd_hamilton, 
+                             grp == "lot" ~ sd_lot, 
+                             grp == "operator" ~ sd_operator, 
+                             grp == "workcell" ~ sd_wc))
+  
+    return(return_df)
+  
+}
+```
+
+```{r}
+sim_factorial_6flex <- purrr::imap_dfr(1:1000, ~ get_estimates_ff_6f())
+
+sim_factorial_6flex %>% 
+  ggplot(.,aes(grp, sdcor)) + 
+  geom_boxplot() + 
+  geom_point(aes(x = grp, y = true_sd), color = "red") 
+
+sim_factorial_6flex %>% 
+  filter(perc_cv == 0) %>% 
+  nrow(.)/nrow(sim_factorial_6flex)
+```
+
+### Manual 6 FLEX 
+How does are manual design do? 
+
+```{r}
+manual_6_flex  <- function(sd_operator = 15,
+                             sd_hamilton = 10,
+                             sd_lot = 15,
+                             sd_flex = 10,
+                             sd_wc = 5,
+                             sd_error = 5,
+                             beta_0 = 400) {
+  operator <- data.frame(operator = c("A", "B", "C"),
+                         operator_i = rnorm(3, 0, sd_operator))
+  hamilton <- data.frame(hamilton = c("1", "2", "3"),
+                         ham_i = rnorm(3, 0, sd_hamilton))
+  lot <- data.frame(lot = c("ach", "fch", "fce"),
+                    lot_i = rnorm(3, 0, sd_lot))
+  flexmap <- data.frame(flexmap = c("1", "2", "3", "4", "5", "6"),
+                        flex_i = rnorm(3, 0, sd_flex))
+  workcell <- data.frame(workcell = c("1", "2"),
+                         wc_i = rnorm(2, 0, sd_wc))
+  
+  sim_data <-
+    tidyr::crossing(operator, hamilton, lot, flexmap, workcell) %>%
+    mutate(e_i = rnorm(nrow(.), 0, sd_error)) %>%
+    mutate(response = beta_0 + operator_i + ham_i + lot_i + flex_i + wc_i + e_i) %>%
+    select(operator, hamilton, lot, flexmap, workcell, response)
+  
+  
+  
+  
+  sim_mod <- current_des %>% 
+    inner_join(sim_data, by = c("lot", "hamilton", "flexmap", "operator", "workcell")) %>% 
+    lme4::lmer(response ~ (1 | operator) + (1 | hamilton) + (1 | lot) +
+                          (1 | flexmap) + (1 | workcell),
+                        data = .)
+  sd_estimates <- VarCorr(sim_mod) %>%
+    data.frame() %>%
+    select(grp, sdcor)
+  
+  return_df <- ranef(sim_mod) %>% 
+  data.frame() %>% 
+  group_by(grpvar) %>% 
+  summarise(avg = mean(condval)) %>% 
+  rename(grp = grpvar) %>% 
+  inner_join(sd_estimates) %>% 
+  mutate(grand_mean = fixef(sim_mod)) %>% 
+  mutate(perc_cv = 100*(sdcor/(grand_mean))) %>% 
+  mutate(true_cv = case_when(grp == "flexmap" ~ 100*sd_flex/beta_0, 
+                             grp == "hamilton" ~ 100*sd_hamilton/beta_0, 
+                             grp == "lot" ~ 100*sd_lot/beta_0, 
+                             grp == "operator" ~ 100*sd_operator/beta_0, 
+                             grp == "workcell" ~ 100*sd_wc/beta_0), 
+         true_sd = case_when(grp == "flexmap" ~ sd_flex, 
+                             grp == "hamilton" ~ sd_hamilton, 
+                             grp == "lot" ~ sd_lot, 
+                             grp == "operator" ~ sd_operator, 
+                             grp == "workcell" ~ sd_wc))
+  
+    return(return_df)
+  
+}
+```
+
+```{r}
+sim_manual_6flex <- purrr::imap_dfr(1:1000, ~ manual_6_flex())
+
+sim_manual_6flex %>% 
+  ggplot(.,aes(grp, sdcor)) + 
+  geom_boxplot() + 
+  geom_point(aes(x = grp, y = true_sd), color = "red") 
+
+sim_manual_6flex %>% 
+  filter(perc_cv == 0) %>% 
+  nrow(.)/nrow(sim_manual_6flex)
+```
+
+
+```{r}
+sim_factorial_6flex %>% 
+  mutate(design = rep("factorial", nrow(.))) -> sim_factorial_6flex
+sim_manual_6flex %>% 
+  mutate(design = rep("manual", nrow(.))) -> sim_manual_6flex
+
+bind_rows(sim_factorial_6flex, sim_manual_6flex) %>% 
+  ggplot(.,aes(design, sdcor)) + 
+  geom_boxplot() + 
+  facet_grid(cols = vars(grp)) + 
+  labs(title = "Distribution of SD estimates")
+```
+
+
+Compare failures  
+
+```{r}
+factorial_6_fail <- sim_factorial_6flex %>% 
+  group_by(grp) %>% 
+  filter(perc_cv == 0) %>% 
+  count(grp) %>% 
+  ungroup() %>% 
+  mutate(design = rep("factorial", nrow(.)))
+
+manual_6_fail <- sim_manual_6flex %>% 
+  group_by(grp) %>% 
+  filter(perc_cv == 0) %>% 
+  count(grp) %>% 
+  ungroup() %>% 
+  mutate(design = rep("manual", nrow(.)))
+
+bind_rows(factorial_6_fail, manual_6_fail) %>% 
+  mutate(prop = 100*(n/1000)) %>% 
+  ggplot(., aes(design, prop)) + 
+  geom_point() + 
+  facet_grid(cols = vars(grp)) + 
+  labs(title = "% of time variance was estimated to be zero") + 
+  scale_y_continuous(breaks = seq(0, 18, by = 2))
+
+```
+
+
+
+
+
+
+
+
+
+
+A nuance while comparing the 3 methods is that the optimal and full factorial are assuming only 3 flexmaps   
+
+```{r}
+current_des <- current_des %>% 
+  mutate(flexmap = case_when(flexmap == "4" ~ "1", 
+                   flexmap == "5" ~ "2", 
+                   flexmap == "6" ~ "3", 
+                   TRUE ~ as.character(flexmap)))
+  
+```
+
+
+
+
+
+
+
+## Simulation   
+
+Simulate data with fixed standard deviations for each source of variation   
+
+We have five factors  - 
+
+1. operator - 3 levels O1, O2 and O3   
+2. Hamilton - H1, H2, H3  
+3. Lot - L1, L2, L3  
+4. Flexmap  - F1, F2, F3 
+5. Workcell - W1, W2   
+
+
+
+
+Write a function that  
+1. Simulates data  
+2. Fits model 
+3. Extracts variance estimates 
+4. Extracts intercept 
+5. Calculates estimated % CV 
+
+We will then iterate over 1000 times and create a data frame. 
+
+**1**  
+```{r}
+sd_operator = 15
+sd_hamilton = 10
+sd_lot = 15
+sd_flex = 10
+sd_wc = 5
+sd_error = 5
+beta_0 = 400
+```
+
+**Factorial function**   
+```{r}
+get_estimates_ff <- function(sd_operator = 15,
+                             sd_hamilton = 10,
+                             sd_lot = 15,
+                             sd_flex = 10,
+                             sd_wc = 5,
+                             sd_error = 5,
+                             beta_0 = 400) {
+  operator <- data.frame(operator = c("o1", "o2", "03"),
+                         operator_i = rnorm(3, 0, sd_operator))
+  hamilton <- data.frame(hamilton = c("h1", "h2", "h3"),
+                         ham_i = rnorm(3, 0, sd_hamilton))
+  lot <- data.frame(lot = c("l1", "l2", "l3"),
+                    lot_i = rnorm(3, 0, sd_lot))
+  flexmap <- data.frame(flexmap = c("f1", "f2", "f3"),
+                        flex_i = rnorm(3, 0, sd_flex))
+  workcell <- data.frame(workcell = c("w1", "w2"),
+                         wc_i = rnorm(2, 0, sd_wc))
+  
+  sim_data <-
+    tidyr::crossing(operator, hamilton, lot, flexmap, workcell) %>%
+    mutate(e_i = rnorm(nrow(.), 0, sd_error)) %>%
+    mutate(response = beta_0 + operator_i + ham_i + lot_i + flex_i + wc_i + e_i) %>%
+    select(operator, hamilton, lot, flexmap, workcell, response)
+  
+  sim_mod <- lme4::lmer(response ~ (1 | operator) + (1 | hamilton) + (1 | lot) +
+                          (1 | flexmap) + (1 | workcell),
+                        data = sim_data)
+  sd_estimates <- VarCorr(sim_mod) %>%
+    data.frame() %>%
+    select(grp, sdcor)
+  
+  return_df <- ranef(sim_mod) %>% 
+  data.frame() %>% 
+  group_by(grpvar) %>% 
+  summarise(avg = mean(condval)) %>% 
+  rename(grp = grpvar) %>% 
+  inner_join(sd_estimates) %>% 
+  mutate(grand_mean = fixef(sim_mod)) %>% 
+  mutate(perc_cv = 100*(sdcor/(avg + grand_mean))) %>% 
+  mutate(true_cv = case_when(grp == "flexmap" ~ 100*sd_flex/beta_0, 
+                             grp == "hamilton" ~ 100*sd_hamilton/beta_0, 
+                             grp == "lot" ~ 100*sd_lot/beta_0, 
+                             grp == "operator" ~ 100*sd_operator/beta_0, 
+                             grp == "workcell" ~ 100*sd_wc/beta_0), 
+         true_sd = case_when(grp == "flexmap" ~ sd_flex, 
+                             grp == "hamilton" ~ sd_hamilton, 
+                             grp == "lot" ~ sd_lot, 
+                             grp == "operator" ~ sd_operator, 
+                             grp == "workcell" ~ sd_wc))
+  
+    return(return_df)
+  
+}
+```
+
+
+```{r}
+sim_factorial <- purrr::imap_dfr(1:1000, ~ get_estimates_ff())
+
+sim_factorial %>% 
+  ggplot(.,aes(grp, perc_cv)) + 
+  geom_boxplot() + 
+  geom_point(aes(x = grp, y = true_cv), color = "red") 
+
+factorial_80_interval <- sim_factorial %>% 
+  group_by(grp) %>% 
+  summarise(mean_sd = mean(sdcor), lower = quantile(sdcor, 0.10), 
+            upper = quantile(sdcor, 0.9), 
+            mean_cv = mean(perc_cv), 
+            lower_cv = quantile(perc_cv, 0.1), 
+            upper_cv = quantile(perc_cv, 0.9)) %>% 
+  mutate(true_sd = case_when(grp == "flex" ~ sd_flex, 
+                             grp == "ham" ~ sd_hamilton, 
+                             grp == "l" ~ sd_lot, 
+                             grp == "op" ~ sd_operator, 
+                             grp == "wc" ~ sd_wc)) %>% 
+  mutate(grp = case_when(grp == "flex" ~ "flexmap", 
+                         grp == "ham" ~ "hamilton", 
+                         grp == "l" ~ "lot",
+                         grp == "op" ~ "operator", 
+                         grp == "wc" ~ "workcell"), 
+         design = rep("factorial", 5)) %>% 
+  mutate(true_cv = case_when(grp == "flexmap" ~ 100*sd_flex/beta_0, 
+                             grp == "hamilton" ~ 100*sd_hamilton/beta_0, 
+                             grp == "lot" ~ 100*sd_lot/beta_0, 
+                             grp == "operator" ~ 100*sd_operator/beta_0, 
+                             grp == "workcell" ~ 100*sd_wc/beta_0))
+```
+
+#### Current Design   
+
+Jackie design should technically be a subset of the full design  - but seems like it isn't. There are some runs that aren't even part of a full factorial experiment???? 
+
+```{r}
+current_des %>% 
+  ggplot(.,aes(workcell, flexmap)) + 
+  geom_point() + 
+  facet_grid(rows = vars(lot), cols = vars(operator, hamilton)) + 
+  theme_classic() 
+
+optimal %>% 
+  ggplot(.,aes(workcell, flexmap)) + 
+  geom_point() + 
+  facet_grid(rows = vars(lot), cols = vars(operator, hamilton)) + 
+  theme_classic() 
+```
+
+
+
+```{r}
+jackie_sim_estimate <- function(sd_operator = 15,
+                             sd_hamilton = 10,
+                             sd_lot = 15,
+                             sd_flex = 10,
+                             sd_wc = 5,
+                             sd_error = 5,
+                             beta_0 = 400) {
+  operator <- data.frame(operator = c("A", "B", "C"),
+                         operator_i = rnorm(3, 0, sd_operator))
+  hamilton <- data.frame(hamilton = c("1", "2", "3"),
+                         ham_i = rnorm(3, 0, sd_hamilton))
+  lot <- data.frame(lot = c("ace", "ach", "fce"),
+                    lot_i = rnorm(3, 0, sd_lot))
+  flexmap <- data.frame(flexmap = c("1", "2", "3"),
+                        flex_i = rnorm(3, 0, sd_flex))
+  workcell <- data.frame(workcell = c("1", "2"),
+                         wc_i = rnorm(2, 0, sd_wc))
+
+sim_data <- tidyr::crossing(operator, hamilton, lot, flexmap, workcell) %>% 
+  mutate(e_i = rnorm(nrow(.), 0, sd_error)) %>% 
+  mutate(response = beta_0 + operator_i + ham_i + lot_i + flex_i + wc_i + e_i) %>% 
+  select(operator, hamilton, lot, flexmap, workcell, response)
+
+ sim_mod <- current_des %>% 
+  inner_join(sim_data, by = c("lot", "hamilton", "flexmap", "operator", "workcell")) %>% 
+  lme4::lmer(response ~ (1 | operator) + (1 | hamilton) + (1 | lot) +
+                          (1 | flexmap) + (1 | workcell),
+                        data = .)
+ 
+  sd_estimates <- VarCorr(sim_mod) %>%
+    data.frame() %>%
+    select(grp, sdcor)
+  
+  return_df <- ranef(sim_mod) %>% 
+  data.frame() %>% 
+  group_by(grpvar) %>% 
+  summarise(avg = mean(condval)) %>% 
+  rename(grp = grpvar) %>% 
+  inner_join(sd_estimates) %>% 
+  mutate(grand_mean = fixef(sim_mod)) %>% 
+  mutate(perc_cv = 100*(sdcor/(avg + grand_mean))) %>% 
+  mutate(true_cv = case_when(grp == "flexmap" ~ 100*sd_flex/beta_0, 
+                             grp == "hamilton" ~ 100*sd_hamilton/beta_0, 
+                             grp == "lot" ~ 100*sd_lot/beta_0, 
+                             grp == "operator" ~ 100*sd_operator/beta_0, 
+                             grp == "workcell" ~ 100*sd_wc/beta_0))
+  
+    return(return_df)
+  
+
+}
+```
+
+
+```{r}
+sim_jackie <- purrr::imap_dfr(1:1000, ~ jackie_sim_estimate())
+
+sim_jackie %>% 
+  ggplot(.,aes(grp, perc_cv)) + 
+  geom_boxplot() + 
+  geom_point(aes(x = grp, y = true_cv), color = "red")
+
+sim_jackie %>% 
+  filter(perc_cv == 0)
+
+jackie_80_interval <- sim_jackie %>% 
+  group_by(grp) %>% 
+  summarise(mean_sd = mean(sdcor), lower = quantile(sdcor, 0.10), 
+            upper = quantile(sdcor, 0.9), 
+            mean_cv = mean(perc_cv), 
+            lower_cv = quantile(perc_cv, 0.1), 
+            upper_cv = quantile(perc_cv, 0.9))%>% 
+  mutate(true_sd = case_when(grp == "flexmap" ~ sd_flex, 
+                             grp == "hamilton" ~ sd_hamilton, 
+                             grp == "lot" ~ sd_lot, 
+                             grp == "operator" ~ sd_operator, 
+                             grp == "workcell" ~ sd_wc)) %>%
+  mutate(true_cv = case_when(grp == "flexmap" ~ 100*sd_flex/beta_0, 
+                             grp == "hamilton" ~ 100*sd_hamilton/beta_0, 
+                             grp == "lot" ~ 100*sd_lot/beta_0, 
+                             grp == "operator" ~ 100*sd_operator/beta_0, 
+                             grp == "workcell" ~ 100*sd_wc/beta_0)) %>% 
+  mutate(design = rep("current", 5))
+
+```
+
+
+
+
+
+
+#### Optimal Design  
+
+```{r}
+full_factorial %>% 
+  ggplot(.,aes(operator, workcell)) + 
+  geom_point() + 
+  facet_grid(rows = vars(hamilton, lot), 
+             cols = vars(flexmap))
+
+optimal %>% 
+  ggplot(.,aes(operator, workcell)) + 
+  geom_point() + 
+  facet_grid(rows = vars(hamilton, lot), 
+             cols = vars(flexmap))
+
+ff <- full_factorial 
+op <- optimal %>% 
+  mutate(design = rep("optimal", nrow(.)))
+ff %>% 
+  left_join(op) %>% 
+  ggplot(.,aes(operator, workcell)) + 
+  geom_point(aes(color = design)) + 
+  facet_grid(rows = vars(hamilton, lot), 
+             cols = vars(flexmap))
+
+op %>% 
+  ggplot(.,aes(operator, workcell)) + 
+  geom_point() + 
+  facet_grid(rows = vars(hamilton, lot), 
+             cols = vars(flexmap))
+```
+
+
+```{r}
+optimal_sim_estimate <- function(sd_operator = 15,
+                             sd_hamilton = 10,
+                             sd_lot = 15,
+                             sd_flex = 10,
+                             sd_wc = 5,
+                             sd_error = 5,
+                             beta_0 = 400, 
+                             data = optimal) {
+  
+  operator <- data.frame(operator = c("A", "B", "C"),
+                         operator_i = rnorm(3, 0, sd_operator))
+  hamilton <- data.frame(hamilton = c("1", "2", "3"),
+                         ham_i = rnorm(3, 0, sd_hamilton))
+  lot <- data.frame(lot = c("ace", "ach", "fce"),
+                    lot_i = rnorm(3, 0, sd_lot))
+  flexmap <- data.frame(flexmap = c("1", "2", "3"),
+                        flex_i = rnorm(3, 0, sd_flex))
+  workcell <- data.frame(workcell = c("1", "2"),
+                         wc_i = rnorm(2, 0, sd_wc))
+
+sim_data <- tidyr::crossing(operator, hamilton, lot, flexmap, workcell) %>% 
+  mutate(e_i = rnorm(nrow(.), 0, sd_error)) %>% 
+  mutate(response = beta_0 + operator_i + ham_i + lot_i + flex_i + wc_i + e_i) %>% 
+  select(operator, hamilton, lot, flexmap, workcell, response)
+
+ sim_mod <- data %>% 
+  inner_join(sim_data, by = c("lot", "hamilton", "flexmap", "operator", "workcell")) %>% 
+  lme4::lmer(response ~ (1 | operator) + (1 | hamilton) + (1 | lot) +
+                          (1 | flexmap) + (1 | workcell),
+                        data = .)
+ 
+  sd_estimates <- VarCorr(sim_mod) %>%
+    data.frame() %>%
+    select(grp, sdcor)
+  
+  return_df <- ranef(sim_mod) %>% 
+  data.frame() %>% 
+  group_by(grpvar) %>% 
+  summarise(avg = mean(condval)) %>% 
+  rename(grp = grpvar) %>% 
+  inner_join(sd_estimates) %>% 
+  mutate(grand_mean = fixef(sim_mod)) %>% 
+  mutate(perc_cv = 100*(sdcor/(avg + grand_mean))) %>% 
+  mutate(true_cv = case_when(grp == "flexmap" ~ 100*sd_flex/beta_0, 
+                             grp == "hamilton" ~ 100*sd_hamilton/beta_0, 
+                             grp == "lot" ~ 100*sd_lot/beta_0, 
+                             grp == "operator" ~ 100*sd_operator/beta_0, 
+                             grp == "workcell" ~ 100*sd_wc/beta_0), 
+         true_sd = case_when(grp == "flexmap" ~ sd_flex, 
+                             grp == "hamilton" ~ sd_hamilton, 
+                             grp == "lot" ~ sd_lot, 
+                             grp == "operator" ~ sd_operator, 
+                             grp == "workcell" ~ sd_wc))
+  
+    return(return_df)
+}
+```
+
+```{r}
+sim_optimal <- purrr::imap_dfr(1:1000, ~ optimal_sim_estimate())
+
+sim_optimal %>% 
+  ggplot(.,aes(grp, perc_cv)) + 
+  geom_boxplot() + 
+  geom_point(aes(x = grp, y = true_cv), color = "red")
+
+sim_optimal %>% 
+  ggplot(.,aes(grp, sdcor)) + 
+  geom_boxplot() + 
+  geom_point(aes(x = grp, y = true_cv), color = "red")
+
+sim_optimal %>% 
+  filter(perc_cv == 0)
+
+optimal_80_interval <- sim_optimal %>% 
+  group_by(grp) %>% 
+  summarise(mean_sd = mean(sdcor), lower = quantile(sdcor, 0.10), 
+            upper = quantile(sdcor, 0.9), 
+            mean_cv = mean(perc_cv), 
+            lower_cv = quantile(perc_cv, 0.1), 
+            upper_cv = quantile(perc_cv, 0.9)) %>% 
+  mutate(true_sd = case_when(grp == "flexmap" ~ sd_flex, 
+                             grp == "hamilton" ~ sd_hamilton, 
+                             grp == "lot" ~ sd_lot, 
+                             grp == "operator" ~ sd_operator, 
+                             grp == "workcell" ~ sd_wc)) %>% 
+  mutate(true_cv = case_when(grp == "flexmap" ~ 100*sd_flex/beta_0, 
+                             grp == "hamilton" ~ 100*sd_hamilton/beta_0, 
+                             grp == "lot" ~ 100*sd_lot/beta_0, 
+                             grp == "operator" ~ 100*sd_operator/beta_0, 
+                             grp == "workcell" ~ 100*sd_wc/beta_0)) %>% 
+  
+  mutate(design = rep("optimal", 5))
+
+optimal_80_interval 
+```
+
+
+### Compare  
+
+```{r}
+bind_rows(factorial_80_interval, jackie_80_interval, optimal_80_interval) %>% 
+  ggplot(.,aes(design, mean_cv, group = grp)) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = lower_cv, ymax = upper_cv), width = 0.5) + 
+  facet_grid(cols = vars(grp)) + 
+  geom_point(aes(x = design, y = true_cv), color = "red", 
+             position = position_dodge(width = 1)) + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(title = "80 % of simulation estimates") 
+
+
+bind_rows(sim_factorial, sim_optimal, .id = "design") %>% 
+  mutate(design = case_when(design == "1" ~ "factorial", 
+                            design == "2" ~ "optimal")) %>% 
+  ggplot(aes(design, sdcor, group = design)) + 
+  geom_boxplot() + 
+  geom_point(aes(x = design, y = true_sd), color = "red", 
+             position = position_dodge(width = 1)) + 
+  facet_grid(cols = vars(grp)) + 
+  #theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+factorial_fail <- sim_factorial %>% 
+  group_by(grp) %>% 
+  filter(perc_cv == 0) %>% 
+  count(grp) %>% 
+  ungroup() %>% 
+  mutate(design = rep("factorial", nrow(.)))
+
+
+
+optimal_fail <- sim_optimal %>% 
+  filter(perc_cv == 0) %>% 
+  group_by(grp) %>% 
+  filter(perc_cv == 0) %>% 
+  count(grp) %>% 
+  ungroup() %>% 
+  mutate(design = rep("optimal", nrow(.)))
+
+bind_rows(factorial_fail, optimal_fail) %>% 
+  mutate(n = 100*(n/1000)) %>% 
+  ggplot(.,aes(design, n)) + 
+  geom_point(color = "purple") + 
+  facet_grid(cols = vars(grp)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(title = "Proportion of time variance was estimated to be 0", 
+       y = "% of time CV estimated to be 0") + 
+  scale_y_continuous(breaks = seq(0, 16, by = 2))
+```
+
+
+
+
+
+
+
+### Zero variances   
+
+```{r}
+factorial_fail <- sim_factorial %>% 
+  group_by(grp) %>% 
+  filter(perc_cv == 0) %>% 
+  count(grp) %>% 
+  ungroup() %>% 
+  mutate(design = rep("factorial", nrow(.)))
+
+
+
+optimal_fail <- sim_optimal %>% 
+  filter(perc_cv == 0) %>% 
+  group_by(grp) %>% 
+  filter(perc_cv == 0) %>% 
+  count(grp) %>% 
+  ungroup() %>% 
+  mutate(design = rep("optimal", nrow(.)))
+
+
+current_fail <- sim_jackie %>% 
+  group_by(grp) %>% 
+  filter(perc_cv == 0) %>% 
+  count(grp) %>% 
+  ungroup() %>% 
+  mutate(design = rep("current", nrow(.)))
+
+bind_rows(factorial_fail, optimal_fail, current_fail) %>% 
+  mutate(n = 100*(n/1000)) %>% 
+  ggplot(.,aes(design, n)) + 
+  geom_point(color = "purple") + 
+  facet_grid(cols = vars(grp)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(title = "Proportion of time variance was estimated to be 0", 
+       y = "% of time CV estimated to be 0")
+```
+
+
+
+
+
+
+
+
+
+### 18 run optimal design   
+
+```{r}
+optimal_18 <- tibble::tribble(
+                                          ~lot, ~workcell, ~hamilton, ~flexmap, ~operator,
+                                          "fce",  1L,  3L,  3L, "B",
+                                          "ach",  1L,  3L,  2L, "B",
+                                          "ach",  1L,  3L,  1L, "C",
+                                          "ach",  1L,  1L,  3L, "A",
+                                          "fce",  2L,  1L,  2L, "B",
+                                          "fch",  1L,  2L,  2L, "A",
+                                          "fch",  2L,  3L,  2L, "A",
+                                          "fch",  1L,  1L,  1L, "B",
+                                          "fch",  2L,  2L,  1L, "B",
+                                          "fce",  2L,  3L,  1L, "A",
+                                          "fce",  1L,  2L,  2L, "C",
+                                          "ach",  2L,  1L,  2L, "C",
+                                          "fce",  1L,  2L,  2L, "C",
+                                          "ach",  2L,  2L,  3L, "B",
+                                          "ach",  2L,  2L,  1L, "A",
+                                          "fch",  2L,  3L,  3L, "C",
+                                          "ach",  1L,  1L,  3L, "A",
+                                          "fch",  2L,  3L,  3L, "C"
+                                          ) %>% 
+  mutate(lot = tolower(lot)) %>% 
+  mutate_all(., ~ as.character(.x))
+
+```
+
+
+```{r}
+sim_optimal_18 <- purrr::imap_dfr(1:1000, ~ optimal_sim_estimate(data = optimal_18))
+
+sim_optimal_18 %>% 
+  ggplot(.,aes(grp, perc_cv)) + 
+  geom_boxplot() + 
+  geom_point(aes(x = grp, y = true_cv), color = "red")
+
+sim_optimal_18 %>% 
+  ggplot(.,aes(grp, sdcor)) + 
+  geom_boxplot() + 
+  geom_point(aes(x = grp, y = true_cv), color = "red")
+
+sim_optimal_18 %>% 
+  filter(perc_cv == 0)
+
+optimal_18_80_interval <- sim_optimal_18 %>% 
+  group_by(grp) %>% 
+  summarise(mean_Sd = mean(sdcor), lower = quantile(sdcor, 0.10), 
+            upper = quantile(sdcor, 0.9)) %>% 
+  mutate(true_sd = case_when(grp == "flexmap" ~ sd_flex, 
+                             grp == "hamilton" ~ sd_hamilton, 
+                             grp == "lot" ~ sd_lot, 
+                             grp == "operator" ~ sd_operator, 
+                             grp == "workcell" ~ sd_wc)) %>% 
+  mutate(design = rep("optimal", 5))
+
+```
+
+
+```{r}
+bind_rows(factorial_80_interval, jackie_80_interval, optimal_80_interval) %>% 
+  ggplot(.,aes(design, mean_sd, group = grp)) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.5) + 
+  facet_grid(cols = vars(grp)) + 
+  geom_point(aes(x = design, y = true_sd), color = "red", 
+             position = position_dodge(width = 1)) + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

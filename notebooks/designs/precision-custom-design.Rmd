@@ -1,0 +1,322 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r message=FALSE}
+library(tidyverse)
+library(glmmTMB) 
+library(lme4)
+
+library(rstanarm) 
+library(tidybayes)
+library(bayesplot)
+```
+
+
+
+### Comparing designs  
+
+Advantages of a custom factorial design vs the design for precision listed in the beta AV testing (one factor at a time). 
+
+Current design - 
+
+
+```{r}
+design_precision_v1 <- data.frame(hamilton = c(rep(1, 4), 2, 3, rep(2, 6)), 
+                                  fm_p1 = c(rep(1, 3), rep(3, 3), 1, 6, 2, 5, 3, 
+                                           4), fm_p2 = c(rep(2, 3), rep(4, 3), 
+                                                        5, 2, 4, 3, 6, 1), 
+                                  operator = c("a", "b", "c", rep("b", 3), 
+                                               rep("c", 6)))
+```
+
+
+
+```{r}
+design_precision_v1 <- design_precision_v1 %>% 
+  dplyr::mutate_all(~ as.character(.x)) %>% 
+  dplyr::mutate(fake_resp = rnorm(12, 0, 1)) 
+
+mm_v1 <- model.matrix(fake_resp ~ hamilton + fm_p1 + operator, 
+                      data = design_precision_v1) %>% 
+  as.data.frame() %>% 
+  as.matrix()
+
+mm_coefs <- c(1, rep(0, 8), 0)
+
+fake_resp_vec <- mm_v1 %*% mm_coefs
+
+fake_resp_vec <- fake_resp_vec + rnorm(nrow(design_precision_v1), 0, 0.5) 
+
+design_precision_v1 <-design_precision_v1 %>% 
+  mutate(fake_resp = fake_resp_vec)
+
+design_precision_v1 %>% 
+  ggplot(.,aes(operator, fake_resp)) + 
+  geom_point()
+
+design_precision_v1 %>% 
+  ggplot(.,aes(operator, fake_resp)) + 
+  geom_jitter(aes(color = hamilton, shape = fm_p1)) + 
+  theme_minimal()
+
+design_precision_v1 %>% 
+  ggplot(.,aes(operator, fake_resp)) + 
+  geom_jitter(aes(color = hamilton, shape = fm_p2)) + 
+  theme_minimal()
+
+design_precision_v1 %>% 
+  ggplot(.,aes(operator, fake_resp)) + 
+  geom_point(aes(color = fm_p1)) +
+  facet_wrap(vars(hamilton)) + 
+  theme_classic()
+
+```
+
+Can we model this data to estimate variances?  
+
+```{r}
+precision_v1_lmer <- stan_lmer(fake_resp ~ (1|operator) + (1|fm_p1) + (1|hamilton), 
+                               data = design_precision_v1)
+
+bayesplot::mcmc_intervals(as.matrix(tmp), regex_pars = c("Sigma", "sigma"), prob = 0) +
+  scale_y_discrete(labels = c("Sigma[operator:(Intercept),(Intercept)]" = "operator", 
+                              "Sigma[hamilton:(Intercept),(Intercept)]" = "hamilton", 
+                              "Sigma[flexmap:(Intercept),(Intercept)]" = "flexmap", 
+                              "sigma" = "unexplainable error")) + 
+  theme_minimal()
+```
+
+
+
+
+
+### Example from Intro to SQC (page 384)  
+
+```{r}
+## create the dataframe  
+
+thermal_data <- data.frame(inspector = c(rep("1", 30), rep("2",30), rep("3", 30)), 
+           part = c(rep(1:10, 3)), 
+           meas = c(37,42, 30, 42, 28, 42, 25, 40, 25, 35, 
+                    38, 41, 31, 43, 30, 42, 26, 40, 25, 34, 
+                    37, 43, 31, 42, 29, 43, 27, 40, 25, 34, 
+                    41, 42, 31, 43, 29, 45, 28, 43, 27, 35, 
+                    41, 42, 31, 43, 30, 45, 28, 42, 29, 35, 
+                    40, 42, 31, 43, 29, 45, 30, 42, 28, 34, 
+                    41, 43, 29, 42, 31, 44, 29, 43, 26, 35, 
+                    42, 42, 30, 42, 29, 46, 27, 43, 26, 34, 
+                    41, 43, 28, 42, 29, 45, 27, 41, 26, 35)) %>% 
+  mutate(part = as.character(part))
+```
+
+
+```{r}
+thermal_data %>% 
+  ggplot(.,aes(inspector, meas, group = part)) + 
+  geom_point(aes(color = part))
+```
+
+
+
+
+```{r}
+m1 <- lme4::lmer(meas ~ (1|inspector) + (1|part) + (1|inspector:part), 
+                 data = thermal_data)
+```
+
+The results match with the results on page 386 
+
+```{r}
+summary(m1)
+```
+
+
+
+### Custom Design  
+
+
+```{r}
+
+```
+
+
+```{r}
+minimal_de <- tibble::tribble(
+                                ~hamilton, ~flexmap, ~operator,
+                                 3L,  4L, "B",
+                             3L,  2L, "C",
+                             1L,  2L, "B",
+                             3L,  1L, "A",
+                             1L,  4L, "C",
+                             2L,  1L, "C",
+                             2L,  1L, "C",
+                             2L,  3L, "A",
+                             2L,  5L, "B",
+                             1L,  3L, "C",
+                             1L,  5L, "A",
+                             2L,  4L, "A",
+                             3L,  6L, "C",
+                             1L,  6L, "B",
+                             1L,  5L, "A"
+                                ) %>% 
+  mutate(hamilton = as.character(hamilton), flexmap = as.character(flexmap))
+mm <- model.matrix(~  flexmap + hamilton + operator, minimal_de) %>% 
+  as.data.frame() %>% 
+  as.matrix()
+
+## we force the coefficient for FM6 to be + 1 than FM1
+coefs <- c(1, 0, 0, 0, 0, 0, 0, 0, 0, 1)
+
+
+sim_resp_vec <- mm %*% coefs
+set.seed(10192021)
+sim_resp_vec <- sim_resp_vec + rnorm(nrow(sim_resp_vec), 0, 0.5)
+
+
+minimal_de <- minimal_de %>% 
+  mutate(sim_resp = sim_resp_vec)
+
+minimal_de %>% 
+  ggplot(.,aes(operator, sim_resp)) + 
+  geom_point()
+
+minimal_de %>% 
+  ggplot(.,aes(operator, sim_resp)) + 
+  geom_point(aes(color = flexmap)) + 
+  facet_wrap(vars(hamilton)) + 
+  theme_classic()
+```
+
+
+
+```{r}
+tmp <- stan_lmer(sim_resp ~ (1|operator) + (1|flexmap) + (1|hamilton), 
+           data = minimal_de)
+
+lme4::lmer(sim_resp ~ (1|operator) + (1|flexmap) + (1|hamilton), 
+           data = minimal_de)
+
+bayesplot::mcmc_intervals(as.matrix(tmp), regex_pars = c("Sigma", "sigma"), prob = 0) +
+  scale_y_discrete(labels = c("Sigma[operator:(Intercept),(Intercept)]" = "operator", 
+                              "Sigma[hamilton:(Intercept),(Intercept)]" = "hamilton", 
+                              "Sigma[flexmap:(Intercept),(Intercept)]" = "flexmap", 
+                              "sigma" = "unexplainable error")) + 
+  theme_minimal()
+```
+
+
+
+```{r}
+### can the second panel be shuffled on the flexmap? 
+vec_fm2 <- sample(1:6, 15, replace = TRUE)
+
+minimal_de <- minimal_de %>% 
+  mutate(flexmap_2 = vec_fm2) %>% 
+  mutate(flexmap_2 = ifelse(flexmap_2 == flexmap, flexmap_2 + sample(c(1, -1), 1), 
+                            flexmap_2)) %>% 
+  mutate(flexmap_2 = as.character(flexmap_2))
+
+tmp <- stan_lmer(sim_resp ~ (1|operator) + (1|flexmap_2) + (1|hamilton), 
+           data = minimal_de)
+
+bayesplot::mcmc_intervals(as.matrix(tmp), regex_pars = c("Sigma", "sigma"), prob = 0) +
+  scale_y_discrete(labels = c("Sigma[operator:(Intercept),(Intercept)]" = "operator", 
+                              "Sigma[hamilton:(Intercept),(Intercept)]" = "hamilton", 
+                              "Sigma[flexmap:(Intercept),(Intercept)]" = "flexmap", 
+                              "sigma" = "unexplainable error")) + 
+  theme_minimal()
+
+data.frame()
+```
+
+
+**FE model**   
+```{r}
+minimal_fe <- lm(sim_resp ~ operator + flexmap + hamilton, data = minimal_de)
+car::Anova(minimal_fe, type = "III")
+
+minimal_fe_panel2 <- lm(sim_resp ~ operator + flexmap_2 + hamilton, 
+                        data = minimal_de)
+car::Anova(minimal_fe_panel2, type = "III")
+```
+
+
+
+
+Compare with JMP design 
+
+```{r}
+jmp_design <- tibble::tribble(
+  ~ hamilton, ~ flexmap, ~ operator, 
+     "H2", "F2", "B",
+     "H1", "F6", "C",
+     "H2", "F1", "C",
+     "H2", "F5", "A",
+     "H3", "F6", "B",
+     "H3", "F1", "B",
+     "H3", "F2", "A",
+     "H1", "F3", "A",
+     "H1", "F5", "C",
+     "H3", "F2", "A",
+     "H1", "F5", "C",
+     "H2", "F3", "C",
+     "H1", "F4", "B",
+     "H3", "F4", "C",
+     "H1", "F4", "B",
+     "H3", "F3", "B",
+     "H2", "F6", "A",
+     "H1", "F1", "A"
+     )
+mm_jmp <- model.matrix(~  flexmap + hamilton + operator, jmp_design) %>% 
+  as.data.frame() %>% 
+  as.matrix()
+
+## we force the coefficient for FM6 to be + 1 than FM1
+coefs <- c(1, 0, 0, 0, 1, 0, 0, 0, 0, 0)
+
+
+sim_resp_vec <- mm_jmp %*% coefs
+set.seed(10192021)
+sim_resp_vec <- sim_resp_vec + rnorm(nrow(sim_resp_vec), 0, 0.5)
+
+
+jmp_design <- jmp_design %>% 
+  mutate(sim_resp = sim_resp_vec)
+
+jmp_design %>% 
+  ggplot(.,aes(operator, sim_resp)) + 
+  geom_point(aes(color = operator)) + 
+  facet_wrap(vars(hamilton))
+
+tmp_jmp <- stan_lmer(sim_resp ~ (1|operator) + (1|flexmap) + (1|hamilton), 
+           data = jmp_design)
+
+lme4::lmer(sim_resp ~ (1|operator) + (1|flexmap) + (1|hamilton), 
+           data = jmp_design)
+
+bayesplot::mcmc_intervals(as.matrix(tmp_jmp), regex_pars = c("Sigma", "sigma")) +
+  scale_y_discrete(labels = c("Sigma[operator:(Intercept),(Intercept)]" = "operator", 
+                              "Sigma[hamilton:(Intercept),(Intercept)]" = "hamilton", 
+                              "Sigma[flexmap:(Intercept),(Intercept)]" = "flexmap"))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+

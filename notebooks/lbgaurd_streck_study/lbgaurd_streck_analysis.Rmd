@@ -1,0 +1,160 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse) 
+library(googledrive) 
+library(googlesheets4)
+
+freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
+                   '#FECDD1')
+```
+
+
+
+
+
+### Data   
+
+Read in the data  
+
+Data located here [link](https://docs.google.com/spreadsheets/d/17MsDxOSewslHAJlm47FEHaHNH4jzEziL/edit#gid=566012438)  
+
+
+```{r}
+raw_data <- readr::read_csv(here::here("data", "raw", "lbgaurd_streck_study", 
+                                       "20210727_Phase2Exp5_DonorData_Analysis_RS.xlsx - xPonent.csv"))
+```
+
+
+
+Rashmi noted some samples were in the upper/lower asymptotes of the curve. For the purposes of this analysis, we consider all of the data that we have. 
+We have 6 replicates of each samples and we use the average of that 6 replicates.     
+
+```{r}
+raw_data %>% 
+  count(xponent_id)
+```
+
+
+```{r}
+tube_data <- raw_data %>% 
+  filter(grepl("LBG", xponent_id) | grepl("Streck", xponent_id)) %>% 
+  group_by(panel, plate, assay, xponent_id) %>% 
+  summarise(avg_conc = mean(calc_conc, na.rm = TRUE)) %>% 
+  mutate(sample_number = readr::parse_number(xponent_id), 
+         tube = ifelse(grepl("LBG",xponent_id),  "lbgaurd", "streck")) %>% 
+  ungroup()
+```
+
+### Plots 
+
+```{r}
+paired_plot <- function(protein = "NULL"){
+  tube_data %>% 
+  filter(assay == protein) %>%
+  mutate(log_conc = log1p(avg_conc)) %>% 
+  ggplot(.,aes(tube, log_conc, group = as.character(sample_number))) + 
+  geom_point() + 
+  geom_line() + 
+  facet_wrap(vars(plate)) + 
+  theme_classic() + 
+  labs(title = paste0(protein))
+}
+
+
+
+list_of_proteins <- tube_data %>% 
+  distinct(assay) %>% 
+  pull()
+
+
+map(list_of_proteins, ~ paired_plot(protein = .x)) 
+```
+
+### Statistical Analysis 
+
+
+```{r}
+paired_ttest <- function(protein = "NULL") {
+  tube_data %>% 
+  filter(assay == protein) %>%
+  mutate(log_conc = log1p(avg_conc)) %>% 
+  pivot_wider(., id_cols = c(plate,sample_number), names_from = c(tube), values_from = log_conc) %>% 
+  #{t.test(.$streck, .$lbgaurd, paired = TRUE)}
+  lm(streck - lbgaurd ~ 1, data = .) %>% 
+  broom::tidy() %>% 
+    filter(grepl("Intercept", term)) %>% 
+  mutate(assay = protein,
+         log_p_val = log10(p.value))
+}
+
+map_dfr(list_of_proteins, ~ paired_ttest(protein = .x)) %>% 
+  mutate(assay = fct_reorder(assay, log_p_val)) %>% 
+  ggplot(.,aes(assay, log_p_val)) + 
+  geom_point(color = freenome_colors[1]) + 
+  geom_hline(yintercept = log10(0.05)) +
+  theme_classic() + 
+  coord_flip() +
+  labs(title = "Paired T-Test Log p-values", 
+       subtitle = "P-values to the left of the line statistically significant at the 0.05 level")
+
+sig_proteins <- map_dfr(list_of_proteins, ~ paired_ttest(protein = .x)) %>% 
+  filter(log_p_val < log10(0.05)) %>% 
+  distinct(assay)
+```
+
+
+
+
+
+
+#### Effect size  
+
+```{r}
+tube_data %>% 
+  ungroup() %>% 
+  inner_join(sig_proteins) %>% 
+  mutate(log_conc = log1p(avg_conc)) %>% 
+  pivot_wider(., id_cols = c(plate,assay, sample_number), names_from = c(tube), 
+              values_from = log_conc) %>% 
+  group_by(assay) %>% 
+  summarise(perc_diff = 100*(lbgaurd - streck)/streck) %>% 
+  summarise(mean_perc_diff = mean(perc_diff, na.rm = TRUE)) %>% 
+  mutate(assay = fct_reorder(assay, abs(mean_perc_diff))) %>% 
+  ggplot(aes(assay, abs(mean_perc_diff))) + 
+  geom_point(color = freenome_colors[1]) + 
+  theme_classic() +
+  labs() +
+  coord_flip() +
+  labs(title = "Absolute % difference between Lbgaurd and Streck", 
+       subtitle = "Shown only for the statistically significant proteins")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,671 @@
+---
+title: "beta-lot-experiments"
+author: "Dilsher Singh Dhillon"
+date: "`r format(Sys.time(),'%d %B,%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float : true 
+---
+<style>
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+    background-color: #948DFF;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+
+
+<font size="4" color="#1DE3FE">  
+
+## Introduction    
+
+</font>  
+
+
+```{r}
+library(tidyverse)
+freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
+                   '#FECDD1')
+```
+
+```
+pate-rnd xmap-collector --include_file_str 20220119_WC_P1vP6 \
+  --include_file_str  20220120_ShakeSpd_1000rpm_Panel1_Plate1 \
+  --include_file_str  20220120_ShakeSpd_1200rpm_Panel1_Plate2 \
+  --include_file_str  20220120_ShakeSpd_1500rpm_Panel1_Plate3 \
+  --include_file_str  20220120_ShakeSpd_1000rpm_Panel2_Plate1 \
+  --include_file_str  20220120_ShakeSpd_1200rpm_Panel2_Plate2 \
+  --include_file_str  20220120_ShakeSpd_1500rpm_Panel2_Plate3 \
+  --include_file_str  20220120_ShakeSpd_1200rpm_Panel2_Plate2 \
+  --include_file_str  20220120_ShakeSpd_1500rpm_Panel2_Plate2 \
+  --include_file_str  Beta \
+  --include_file_str  Interf \
+  --include_file_str  PltStd \
+  --include_file_str  Endogenous \
+  --include_file_str  Exogenous \
+  --include_file_str  Platinum \
+  --include_file_str  Reproducibility \
+  --include_file_str  Donor_Screening \
+  --include_file_str  PlatinumStd \
+  --include_file_str  HamiltonEquiv\
+  --include_file_str  ShakingCompare \
+  --include_file_str  20211221_DLS_Matrix_Int \
+  --include_sample_str Standard --include_sample_str Buffer --include_sample_str Background --include_sample_str QC --include_sample_str RC  --ignore_case_sample \
+  --out_file_name betalot_experiments-2022-01-25.csv
+```
+
+
+```
+gsutil cp gs://inhouse-xmap-data/user_data_frames/betalot_experiments-2022-01-25.csv ~/'google drive'/'my drive'/projects/beta-av-testing/data/raw/beta-lot-stds-controls-2022-01-25.csv
+```
+
+
+
+### Read in data 
+
+```{r}
+raw <- read_csv(here::here("data", "raw", "beta-lot-stds-controls-2022-01-25.csv")) # nolint
+
+raw <- raw %>% 
+  mutate(batch = str_remove(file_name, "_[0-9]+.csv")) %>% 
+  filter(!grepl("20211028_Reproducibilit_Panel2_Plate3", file_name))
+```
+
+
+#### SAPE (Controls vs 4hr)        
+
+According to the (benchling)[https://freenome.benchling.com/freenome/f/lib_rLUfj3iF-06-guardbanding-for-automation/etr_sY3wzurA-bwtm-beta-lot-sa-pe-room-temperature-stability-0-4-hour/edit], 
+the plate 2 or `P2` in the `file_name` the SAPE is prepared 4 hours earlier.   
+
+
+```{r}
+sape_data <- raw %>% 
+    filter(grepl("SAPE", file_name)) %>% 
+    filter(grepl("Beta", file_name)) %>% 
+    mutate(condition = ifelse(grepl("P2", file_name), "4hr", "control"))
+
+```
+
+
+We only need to focus on the top 7 proteins of interest.  
+
+```{r}
+sape_data <- sape_data %>% 
+    filter(assay %in% c("WFDC2", "TNC", "FLT3L", "CEA", "IL-8", 
+    "IL-1 R2", "MUC-16"))
+```
+
+```{r}
+sape_data %>% 
+    colnames()
+```
+
+```{r}
+sape_data %>% 
+    filter(sample_type == "standard") %>% 
+    dplyr::group_by(xponent_id, assay, condition) %>% 
+    dplyr::mutate(median_mfi = mean(median_mfi)) %>% 
+    ggplot(., aes(standard_expected_concentration, median_mfi, 
+    group = condition)) + 
+    geom_point(aes(color = condition), size = 1) + 
+    scale_x_log10() + 
+    scale_y_log10() + 
+    facet_wrap(vars(assay))
+```
+
+
+
+Is this within our expected range?  We can import the tolerance intervals we generate for beta lot to assess this 
+
+```{r}
+mfi_intervals <- read_csv(here::here("data", "processed", 
+"beta_lot_spec_limits", 
+"provisional_spec_limits-MFI.csv"))
+```
+
+```{r}
+mfi_intervals <- mfi_intervals %>% 
+    filter(assay %in% c("WFDC2", "TNC", "FLT3L", "CEA", "IL-8", 
+    "IL-1 R2", "MUC-16")) %>% 
+    rename(xponent_id = standard)
+```
+
+
+```{r}
+#options(vsc.dev.args = list(width = 10, height = 8, units = "in", res = 300))
+```
+
+
+
+
+```{r}
+mfi_sape_plots <- function(df = NULL, protein = NULL) {
+    df %>% 
+    filter(sample_type == "standard") %>% 
+    filter(assay == protein) %>%
+    dplyr::group_by(xponent_id, assay, condition) %>% 
+    dplyr::mutate(median_mfi = mean(median_mfi)) %>% 
+    left_join(., mfi_intervals, by = c("assay", "xponent_id")) %>% 
+    ggplot(., aes(standard_expected_concentration, median_mfi)) + 
+    geom_point(aes(color = condition), size = 1.5, alpha = 1) + 
+    geom_errorbar(aes(ymin = lower_limit, ymax = upper_limit), alpha = 0.05, 
+    width = 0.15) + 
+    scale_x_log10() + 
+    scale_y_log10() + 
+    theme_classic() + 
+    labs(title = paste0(protein), 
+         subtitle = "Error Bars are provisional spec limits")
+}
+```
+
+```{r}
+purrr::map(c("CEA", "IL-8", "WFDC2", "FLT3L", "IL-1 R2", "IL-8", "TNC"), ~ mfi_sape_plots(df = sape_data, protein = .x))
+```
+
+
+
+Compare run controls?   
+
+These experiments don't have run controls on them?   
+
+```{r}
+raw %>%
+  filter(grepl("SAPE", file_name)) %>% 
+    filter(grepl("Beta", file_name)) %>% 
+    mutate(condition = ifelse(grepl("P2", file_name), "4hr", "control")) %>% 
+   filter(assay %in% c("WFDC2", "TNC", "FLT3L", "CEA", "IL-8", 
+    "IL-1 R2", "MUC-16")) %>% 
+  count(sample_type)
+```
+**Extract all standard 5 MFIs for CEA using the tolerance data**    
+
+```{r}
+reference_data <- raw %>% 
+  mutate(batch = str_remove(file_name, "_[0-9]+.csv")) %>% 
+  #filter(lot_number == "1641339" | lot_number == "1641338") %>% 
+  filter(!grepl("20211028_Reproducibilit_Panel2_Plate3", file_name)) %>% 
+  filter(!grepl("SAPE", file_name)) %>% 
+  filter(sample_type == "standard") %>% 
+  filter(assay == "CEA") 
+
+current_data <- sape_data %>% 
+  filter(assay == "CEA") %>% 
+  filter(xponent_id == "Standard5") %>% 
+  group_by(condition) %>% 
+  summarise(avg_mfi = mean(median_mfi))
+
+
+### check how many times we see mfis of > 425 ? 
+reference_data %>% 
+  filter(xponent_id == "Standard5") %>% 
+  group_by(file_name) %>% 
+  summarise(median_mfi = mean(median_mfi)) %>% 
+  filter(median_mfi > 200) %>% 
+  mutate(greater = ifelse(median_mfi >=425, 1, 0)) %>% 
+  count(greater)
+
+
+reference_data %>% 
+  filter(xponent_id == "Standard5") %>% 
+  group_by(file_name) %>% 
+  summarise(median_mfi = mean(median_mfi)) %>% 
+  filter(median_mfi > 200) %>% 
+  ggplot(.,aes(median_mfi)) + 
+  #geom_histogram(bins = 30) + 
+  geom_density() + 
+  #scale_x_log10() + 
+  geom_vline(data = current_data, mapping = aes(xintercept = avg_mfi, color = condition)) + 
+  theme_classic() + 
+  labs(title = "Distribution of Standard 5 using historical runs")
+```
+
+**Recovery**  
+
+Does this translate to recovery?  
+
+```{r}
+recovery_intervals <- read_csv(here::here("data", "processed", 
+"beta_lot_spec_limits", 
+"provisional_spec_limits-pct-recovery.csv")) %>% 
+  rename(xponent_id = standard)
+```
+
+```{r}
+current_data <- sape_data %>% 
+  filter(assay == "CEA") %>% 
+  filter(xponent_id == "Standard5") %>% 
+  group_by(condition) %>% 
+  summarise(avg_recovery = mean(pct_recovery))
+
+
+reference_data %>% 
+  filter(xponent_id == "Standard5") %>% 
+  group_by(file_name) %>% 
+  summarise(avg_recovery = mean(pct_recovery)) %>% 
+  mutate(greater = ifelse(avg_recovery > 106.64, 1, 0)) %>% 
+  count(greater)
+
+
+reference_data %>% 
+  filter(xponent_id == "Standard5") %>% 
+  filter(pct_recovery < 200) %>% 
+  ggplot(.,aes(pct_recovery)) + 
+  geom_density() + 
+  #geom_histogram(bins = 30) + 
+  geom_vline(data = current_data, mapping = aes(xintercept = avg_recovery, color = condition)) + 
+  theme_classic() + 
+  labs(title = "Distirbution of % recovery for standard 5")
+```
+
+
+
+**recovery plots**    
+
+
+
+
+
+
+
+
+#### Workcell experiments    
+
+```
+## get data from GCS  
+pate-rnd xmap-collector --include_file_str 20220119_WC_P1vP6 \
+  --include_file_str  20220119_WC_P1vP6 \
+  --include_sample_str Standard --include_sample_str Buffer --include_sample_str Background --include_sample_str QC --ignore_case_sample \
+  --out_file_name workcell-experiments-january-01-26.csv
+```
+
+```
+gsutil cp gs://inhouse-xmap-data/user_data_frames/workcell-experiments-january-01-26.csv ~/'google drive'/'my drive'/projects/beta-av-testing/data/raw/workcell-experiments-january-01-26.csv
+```
+
+
+```{r}
+wc_data <- readr::read_csv(here::here("data", "raw", "workcell-experiments-january-01-26.csv")) %>% 
+  mutate(condition = ifelse(grepl("plate1", file_name), "position-1", "position-6")) 
+```
+In this case, the SAPE time between plate 1 and plate 6 was 30 minutes. But the SAPE time for plate 1 was also 2 hours (instead of 0 as with the controlled experiment above)   
+
+
+Let's just compare the same assay CEA and the standard 5 and standard 6  
+
+```{r}
+mfi_wc_plots <- function(df = NULL, protein = NULL) {
+    df %>% 
+    filter(sample_type == "standard") %>% 
+    filter(assay == protein) %>%
+    dplyr::group_by(xponent_id, assay, condition) %>% 
+    dplyr::mutate(median_mfi = mean(median_mfi)) %>% 
+    left_join(., mfi_intervals, by = c("assay", "xponent_id")) %>% 
+    ggplot(., aes(standard_expected_concentration, median_mfi)) + 
+    geom_point(aes(color = condition), size = 1.5, alpha = 1) + 
+    geom_errorbar(aes(ymin = lower_limit, ymax = upper_limit), alpha = 0.05, 
+    width = 0.15) + 
+    scale_x_log10() + 
+    scale_y_log10() + 
+    theme_classic() + 
+    labs(title = paste0(protein), 
+         subtitle = "Error Bars are provisional spec limits")
+}
+```
+
+```{r}
+purrr::map(c("CEA", "MUC-16", "WFDC2", "FLT3L", "IL-1 R2", "IL-8", "TNC"), 
+           ~ mfi_wc_plots(df = wc_data, protein = .x))
+```
+
+What about % recovery - is that out of spec as well?   
+
+```{r}
+recovery_wc_plots <- function(df = NULL, protein = NULL) {
+    df %>% 
+    filter(sample_type == "standard") %>% 
+    filter(assay == protein) %>%
+    dplyr::group_by(xponent_id, assay, condition) %>% 
+    dplyr::mutate(pct_recovery = mean(pct_recovery)) %>% 
+    left_join(., recovery_intervals, by = c("assay", "xponent_id")) %>% 
+    ggplot(., aes(xponent_id, pct_recovery)) + 
+    geom_point(aes(color = condition), size = 1.5, alpha = 1) + 
+    geom_errorbar(aes(ymin = lower_limit, ymax = upper_limit), alpha = 0.05, 
+    width = 0.15) + 
+    theme_classic() + 
+    labs(title = paste0(protein), 
+         subtitle = "Error Bars are provisional spec limits")
+}
+wc_data %>% 
+  filter(assay == "MUC-16") %>% 
+  filter(sample_type == "standard") %>% 
+  count(condition)
+```
+
+```{r}
+purrr::map(c("CEA", "MUC-16", "WFDC2", "FLT3L", "IL-1 R2", "IL-8", "TNC"), 
+           ~ recovery_wc_plots(df = wc_data, protein = .x))
+```
+
+
+why does MUC-16 have more position 6?  
+
+```{r}
+wc_data %>% 
+  filter(assay == "MUC-16") %>% 
+  filter(sample_type == "standard") %>% 
+  filter(condition == "position-6")
+```
+
+
+
+
+
+
+
+
+### Hamiltons    
+
+Compare the 3 hamiltons   
+
+
+```{r}
+hamilton_data <- raw %>% 
+  filter(grepl("HamiltonEquiv", file_name)) %>% 
+  filter(assay %in% c("WFDC2", "TNC", "FLT3L", "CEA", "IL-8", 
+    "IL-1 R2", "MUC-16")) %>% 
+  mutate(hamilton = case_when(grepl("Plate1", file_name) ~ "H1", 
+                              grepl("Plate2", file_name) ~ "H2", 
+                              grepl("Plate3", file_name) ~ "H3")) 
+```
+
+```{r}
+mfi_hamilton_plots <- function(df = NULL, protein = NULL) {
+    df %>% 
+    filter(sample_type == "standard") %>% 
+    filter(assay == protein) %>%
+    dplyr::group_by(xponent_id, assay, hamilton) %>% 
+    dplyr::mutate(median_mfi = mean(median_mfi)) %>% 
+    left_join(., mfi_intervals, by = c("assay", "xponent_id")) %>% 
+    ggplot(., aes(standard_expected_concentration, median_mfi)) + 
+    geom_point(aes(color = hamilton), size = 1.5, alpha = 1) + 
+    geom_errorbar(aes(ymin = lower_limit, ymax = upper_limit), alpha = 0.05, 
+    width = 0.15) + 
+    scale_x_log10() + 
+    scale_y_log10() + 
+    theme_classic() + 
+    labs(title = paste0(protein), 
+         subtitle = "Error Bars are provisional spec limits")
+}
+```
+
+```{r}
+purrr::map(c("CEA", "MUC-16", "WFDC2", "FLT3L", "IL-1 R2", "IL-8", "TNC"), ~ 
+             mfi_hamilton_plots(df = hamilton_data, protein = .x))
+```
+
+```{r}
+hamilton_data %>% 
+    filter(xponent_id == "Standard3" | xponent_id == "Standard4") %>% 
+    filter(assay == "CEA") %>%
+    dplyr::group_by(xponent_id, assay, hamilton) %>% 
+    dplyr::mutate(median_mfi = mean(median_mfi)) %>% 
+    left_join(., mfi_intervals, by = c("assay", "xponent_id")) %>% 
+    ggplot(., aes(standard_expected_concentration, median_mfi)) + 
+    geom_point(aes(color = hamilton), size = 1.5, alpha = 1) + 
+    geom_errorbar(aes(ymin = lower_limit, ymax = upper_limit), alpha = 0.05, 
+                  width = 0.025) +   
+    scale_x_log10() + 
+    #scale_y_log10() + 
+    theme_classic() + 
+    labs(title = "CEA Standard 3 and Standard 4", 
+         subtitle = "Error Bars are provisional spec limits") 
+
+hamilton_data %>% 
+    filter(xponent_id == "Standard1" | xponent_id == "Standard2") %>% 
+    filter(assay == "WFDC2") %>%
+    dplyr::group_by(xponent_id, assay, hamilton) %>% 
+    dplyr::mutate(median_mfi = mean(median_mfi)) %>% 
+    left_join(., mfi_intervals, by = c("assay", "xponent_id")) %>% 
+    ggplot(., aes(standard_expected_concentration, median_mfi)) + 
+    geom_point(aes(color = hamilton), size = 1.5, alpha = 1) + 
+    geom_errorbar(aes(ymin = lower_limit, ymax = upper_limit), alpha = 0.05, 
+                  width = 0.025) +   
+    scale_x_log10() + 
+    #scale_y_log10() + 
+    theme_classic() + 
+    labs(title = "WFDC2 Standard 1 and Standard 2", 
+         subtitle = "Error Bars are provisional spec limits") 
+```
+
+**Compare with histogram of previous mfis**    
+
+```{r}
+current_data <- hamilton_data %>% 
+  filter(assay == "CEA") %>% 
+  filter(xponent_id == "Standard4" | xponent_id == "Standard3") %>% 
+  group_by(hamilton, xponent_id) %>% 
+  summarise(median_mfi = mean(median_mfi))
+
+current_data
+
+### check how many times we see mfis of > 425 ? 
+reference_data %>% 
+  filter(xponent_id == "Standard4") %>% 
+  #group_by(file_name) %>% 
+  #summarise(avg_mfi = mean(median_mfi)) %>% 
+  mutate(greater = ifelse(median_mfi >=1280.750, 1, 0)) %>% 
+  count(greater)
+
+
+reference_data %>% 
+  filter(xponent_id == "Standard3") %>% 
+  ggplot(.,aes(median_mfi)) + 
+  geom_histogram(bins = 30) + 
+  geom_vline(data = current_data %>% filter(xponent_id == "Standard3"), 
+             mapping = aes(xintercept = median_mfi, color = hamilton)) + 
+  theme_classic() + 
+  labs(title = "CEA Standard 3")
+
+reference_data %>% 
+  filter(xponent_id == "Standard4") %>% 
+  ggplot(.,aes(median_mfi)) + 
+  geom_histogram(bins = 30) + 
+  geom_vline(data = current_data %>% filter(xponent_id == "Standard4"), 
+             mapping = aes(xintercept = median_mfi, color = hamilton)) + 
+  theme_classic() + 
+    labs(title = "CEA Standard 4")
+
+```
+
+
+
+```{r}
+hamilton_data %>% 
+    #filter(xponent_id == "Standard3" | xponent_id == "Standard4") %>% 
+    filter(assay == "CEA") %>%
+    dplyr::group_by(xponent_id, assay, hamilton) %>% 
+    dplyr::mutate(pct_recovery = mean(pct_recovery)) %>% 
+    left_join(., recovery_intervals, by = c("assay", "xponent_id")) %>% 
+    ggplot(., aes(xponent_id, pct_recovery)) + 
+    geom_point(aes(color = hamilton), size = 1.5, alpha = 1) + 
+    geom_errorbar(aes(ymin = lower_limit, ymax = upper_limit), alpha = 0.05, 
+                  width = 0.025) +   
+   #facet_wrap(vars(assay)) + 
+    theme_classic() + 
+    labs(title = "CEA % Recovery Across 3 Hamiltons", 
+         subtitle = "Error Bars are provisional spec limits") 
+  
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### Shaking compare    
+
+
+```{r}
+shaking_compare <- raw %>% 
+  filter(grepl("20211214", file_name, ignore.case = TRUE)) %>% 
+  mutate(condition = ifelse(grepl("Auto", file_name), "Auto", "Not-Auto")) %>%
+  filter(assay %in% c("WFDC2", "TNC", "FLT3L", "CEA", "IL-8", 
+    "IL-1 R2", "MUC-16"))
+shaking_compare %>% 
+  count(assay) 
+
+```
+
+```{r}
+mfi_shaking_plots <- function(df = NULL, protein = NULL) {
+    df %>% 
+    filter(sample_type == "standard") %>% 
+    filter(assay == protein) %>%
+    dplyr::group_by(xponent_id, assay, condition) %>% 
+    dplyr::mutate(median_mfi = mean(median_mfi, na.rm = TRUE)) %>% 
+    left_join(., mfi_intervals, by = c("assay", "xponent_id")) %>% 
+    ggplot(., aes(standard_expected_concentration, median_mfi)) + 
+    geom_point(aes(color = condition), size = 1.5, alpha = 1) + 
+    geom_errorbar(aes(ymin = lower_limit, ymax = upper_limit), alpha = 0.05, 
+    width = 0.15) + 
+    scale_x_log10() + 
+    scale_y_log10() + 
+    theme_classic() + 
+    labs(title = paste0(protein), 
+         subtitle = "Error Bars are provisional spec limits")
+}
+```
+
+```{r}
+purrr::map(c("CEA", "IL-8", "WFDC2", "FLT3L", "IL-1 R2", "IL-8", "TNC"), ~ 
+             mfi_shaking_plots(df = shaking_compare, protein = .x))
+```
+
+
+
+WFDC2 standard 6?    
+
+
+```{r}
+reference_data <- raw %>% 
+  filter(!grepl("20211028_Reproducibilit_Panel2_Plate3", file_name)) %>% 
+  filter(!grepl("20211214", file_name)) %>% 
+  filter(sample_type == "standard") %>% 
+  filter(assay == "WFDC2") 
+
+current_data <- shaking_compare %>% 
+  filter(assay == "WFDC2") %>% 
+  filter(xponent_id == "Standard1") %>% 
+  group_by(condition) %>% 
+  summarise(avg_mfi = mean(median_mfi))
+
+
+### check how many times we see mfis of > 425 ? 
+reference_data %>% 
+  filter(xponent_id == "Standard1") %>% 
+  group_by(file_name) %>% 
+  summarise(median_mfi = mean(median_mfi)) %>% 
+  mutate(greater = ifelse(median_mfi < 61292.35, 1, 0)) %>% 
+  count(greater)
+
+
+reference_data %>% 
+  filter(xponent_id == "Standard1") %>% 
+  group_by(file_name) %>% 
+  summarise(median_mfi = mean(median_mfi)) %>% 
+  filter(median_mfi > 200) %>% 
+  ggplot(.,aes(median_mfi)) + 
+  #geom_histogram(bins = 30) + 
+  geom_density() + 
+  #scale_x_log10() + 
+  geom_vline(data = current_data, mapping = aes(xintercept = avg_mfi, color = condition)) + 
+  theme_classic() + 
+  labs(title = "WFDC2 Distribution of Standard 1 using historical runs", 
+       subtitle = "Distribution includes future experiments conducted")
+
+
+## does it affect recovery? 
+current_data <- shaking_compare %>% 
+  filter(assay == "WFDC2") %>% 
+  filter(xponent_id == "Standard1") %>% 
+  group_by(condition) %>% 
+  summarise(pct_recovery = mean(pct_recovery))
+
+reference_data %>% 
+  filter(xponent_id == "Standard1") %>% 
+  group_by(file_name) %>% 
+  summarise(pct_recovery = mean(pct_recovery)) %>% 
+  ggplot(.,aes(pct_recovery)) + 
+  #geom_histogram(bins = 30) + 
+  geom_density() + 
+  #scale_x_log10() + 
+  geom_vline(data = current_data, mapping = aes(xintercept = pct_recovery, color = condition)) + 
+  theme_classic() + 
+  labs(title = "WFDC2 Distribution of Standard 1 % Recovery using historical runs", 
+       subtitle = "Distribution includes future experiments conducted")
+
+```
+
+
+### Historical CVs for MFIs   
+
+
+
+```{r eval=FALSE, include=FALSE}
+raw %>% 
+  filter(!grepl("RC", xponent_id)) %>% 
+  filter(xponent_id != "Assay Buffer") %>% 
+  group_by(batch , assay, xponent_id) %>% 
+  summarise(median_mfi = mean(median_mfi), 
+            calc_conc = mean(calc_conc, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  group_by(assay, xponent_id) %>% 
+  summarise(mfi = mean(median_mfi, na.rm = TRUE), 
+            sd_mfi = sd(median_mfi, na.rm = TRUE), 
+            cv = 100*sd_mfi/mfi, 
+            avg_conc = mean(calc_conc, na.rm = TRUE), 
+            conc_pct_cv = 100*sd(calc_conc, na.rm = TRUE)/avg_conc) %>% 
+  googlesheets4::write_sheet(., ss = "https://docs.google.com/spreadsheets/d/12vPDfu8dhTwoALf8vMfEtxNFpmUmKb5XUXChgRUodtU/edit#gid=0", 
+                             sheet = "MFI-CV")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
