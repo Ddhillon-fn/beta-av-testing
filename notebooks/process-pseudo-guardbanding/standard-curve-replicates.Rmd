@@ -1,0 +1,251 @@
+---
+title: "Standard Curve Replicates"
+author: "Dilsher Singh Dhillon"
+date: "`r format(Sys.time(),'%d %B,%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float : true  
+---
+<style>
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+    background-color: #948DFF;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r}
+## Here are the libraries to install  
+library(tidyverse)  
+library(nls.multstart)
+library(furrr)
+freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
+                   '#FECDD1')
+```
+
+```{r}
+plan(multisession, workers = 8)
+```
+
+
+
+
+
+```{r}
+## import data till 22nd february and pre-process like we usually do 
+raw <-
+  read_csv(here::here("data", "raw", "beta-lot-stds-controls-2022-02-21.csv")) %>%
+  filter(assay %in% c("WFDC2", "CEA", "IL-8", "IL-1 R2", "TNC", "MUC-16", "FLT3L")) %>%
+  mutate(batch = str_remove(file_name, "_[0-9]+.csv")) %>%
+  filter(!grepl("20211028_Reproducibilit_Panel2_Plate3", file_name)) %>% ## this was a bad batch
+  mutate(experiment_date = str_extract(batch, "[0-9]+_")) %>%
+  mutate(experiment_date = str_extract(batch, "[0-9]+")) %>%
+  mutate(experiment_date = lubridate::as_date(experiment_date, format = "%Y%d%m")) %>%
+  mutate(
+    month = lubridate::month(experiment_date),
+    year = lubridate::year(experiment_date)
+  ) %>%
+  mutate(bead_fail = ifelse(bead_count < 35, 1, 0)) 
+
+```
+
+
+Pick data we want to work with 
+
+1. No bead failures in any of the standards 
+2. Take experiments that only have 4 standards on our plate (how our process works) 
+3. Exclude standards which have salts mixed in standards  
+
+```{r}
+mod_z_calc <- function(x_vec) {
+  x_vec_median <- median(x_vec, na.rm = TRUE) 
+  x_vec_mad <- mad(x_vec, na.rm = TRUE)
+  
+  mod_z <- 0.6745*(x_vec - x_vec_median)/x_vec_mad
+  return(mod_z)
+  
+}
+
+
+clean_data <- raw %>% 
+  filter(bead_fail == 0) %>% 
+  filter(sample_type == "standard") %>% 
+  filter(!grepl("Salt", xponent_id)) %>% 
+  count(batch, xponent_id, assay) %>% 
+  filter(n == 4) %>% 
+  distinct(batch) %>% 
+  inner_join(raw) %>% 
+  ungroup()
+
+clean_std_data <- clean_data %>% 
+  filter(sample_type == "standard")
+```
+
+```{r}
+
+```
+
+
+## 5PL Recipe 
+
+
+```{r}
+logistic_5pl <- function(d, a, median_mfi, c, b, g) {
+  return(d + (a-d)/(a + (median_mfi/c)^b)^g)
+}
+
+fit_5pl <- function(df = NULL){
+  nls.multstart::nls_multstart(standard_expected_concentration ~ 
+                                          logistic_5pl(d, a, median_mfi = median_mfi, 
+                                                       c, b, g), 
+                                        data = df, 
+                                        iter = 100000, 
+                                        modelweights = 1/standard_expected_concentration^2,
+                                        start_lower = c(a = -1, b = -1, c = 100, d = -1, 
+                                                        g = -1), 
+                                        start_upper = c(a = 1, b = 1, c = 200, d = 1, 
+                                                        g = 1), 
+                                        supp_errors = "Y", 
+                                        control = nls.control(maxiter = 1000, 
+                                                              minFactor=1e-7, 
+                                                              tol=1e-5, 
+                                                              printEval=F, 
+                                                              warnOnly=F))
+}
+```
+
+
+
+
+
+```{r}
+mod_data <- clean_std_data %>% 
+  group_by(xponent_id, assay, batch) %>% 
+  mutate(rep_num = dplyr::row_number(xponent_id)) %>% 
+  select(xponent_id, assay, rep_num, median_mfi, standard_expected_concentration, 
+         calc_conc, pct_recovery, batch) %>% 
+  ungroup()
+```
+
+
+```{r}
+tmp_mod <- mod_data %>% 
+  filter(assay == "FLT3L") %>% 
+  filter(batch == "20210111_PltStd2_Panel1_P3_B1_20220112") %>% 
+  fit_5pl(df = .)
+
+summary(tmp_mod) 
+AIC(tmp_mod)
+broom::tidy(tmp_mod)
+broom::glance(tmp_mod)
+```
+
+
+
+```{r}
+## these are all the ways we can get 2 replicates 
+
+all_combs <- combn(4, 2) %>% 
+  as_tibble(.name_repair = "unique") %>% 
+  janitor::clean_names() %>% 
+  tidyr::pivot_longer(., cols =c(x1:x6), names_to = "sam", values_to = "rep_num")
+```
+
+
+```{r}
+## we create a function that created a dataset with 2 replicates missing from a given standard 
+create_missing_data <-
+  function(comb = "NULL",
+           standard = "NULL",
+           data = NULL) {
+    rep_comb <- all_combs %>%
+      dplyr::filter(sam == comb) %>%
+      select(rep_num)
+    
+    
+    tmp_data <- data %>%
+      dplyr::filter(xponent_id != standard)
+    
+    data %>%
+      dplyr::filter(xponent_id == standard) %>%
+      inner_join(., rep_comb) %>%
+      bind_rows(tmp_data)
+  }
+
+create_missing_data(comb = "x1", standard = "Standard6", data = mod_data)
+```
+
+
+```{r}
+original_mods <- mod_data %>% 
+  group_by(batch, assay) %>% 
+  nest() %>% 
+  mutate(orig_model = map(data, ~ fit_5pl(df = .x)))
+```
+
+
+Create sets of missing data 
+
+```{r}
+combs <- c("x1", "x2", "x3", "x4", "x5", "x6") 
+stds <- c("Standard1", "Standard2", "Standard3", "Standard4", "Standard5", "Standard6")
+
+grid <- tidyr::crossing(combs = combs, stds = stds) %>% 
+  mutate(iter = seq(1, nrow(.), by = 1))
+
+missing_data <- grid %>% 
+  rowwise(iter) %>% 
+  mutate(data = list(create_missing_data(combs, stds, data = mod_data))) %>% 
+  unnest(cols = data)
+```
+
+
+Now we fit a model to each missing data set 
+
+```{r eval=FALSE, include=FALSE}
+missing_models <- missing_data %>% 
+  group_by(batch, assay, combs, stds) %>% 
+  nest() %>% 
+  mutate(missing_models = map(data, ~fit_5pl(df = .x))) 
+```
+
+```{r}
+## save object 
+saveRDS(missing_models, file = here::here("data", "processed", "models", "std-curve-rep.rds"))
+```
+
+```{r}
+missing_models %>% 
+  ungroup() %>% 
+  slice(1) %>% 
+  rename(fits = missing_models) 
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

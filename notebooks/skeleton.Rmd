@@ -28,6 +28,8 @@ library(broom)
 library(readxl)
 library(here)
 
+freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
+                   '#FECDD1')
 ```
 
 

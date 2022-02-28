@@ -5,7 +5,7 @@ date: "`r format(Sys.time(),'%d %B,%Y')`"
 output:
   html_document:
     toc: true
-    toc_float : false 
+    toc_float : true 
 ---
 <style>
 .list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
@@ -13,8 +13,9 @@ output:
 }
 </style>
 
+
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
 ```
 
 
@@ -22,10 +23,23 @@ knitr::opts_chunk$set(echo = FALSE)
 library(tidyverse) 
 ```
 
+```{r}
+freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
+                   '#FECDD1')
+```
+
+```{r eval=FALSE, include=FALSE}
+library(googleCloudStorageR)
+googleAuthR::gar_gce_auth()
+gcs_get_object("gs://inhouse-xmap-data/user_data_frames/betalot_experiments-2022-02-21.csv", saveToDisk="/home/ddhillon/projects/beta-av-testing/data/raw/beta-lot-stds-controls-2022-02-21.csv", 
+               overwrite = TRUE)
+```
 
 
 
 ## PATE import 
+
+Use these set of commands to import the data
 
 ```
 pate-rnd xmap-collector --include_file_str 20220119_WC_P1vP6 \
@@ -54,32 +68,58 @@ pate-rnd xmap-collector --include_file_str 20220119_WC_P1vP6 \
   --include_file_str  Matrix_Buffer_TritonX \
   --include_file_str  20220215_WCFunctional \
   --include_file_str  20220217_Linearity_Streck \
+  --include_lot_str   "lot_number"
   --include_sample_str Standard --include_sample_str Buffer --include_sample_str Background --include_sample_str QC --include_sample_str RC  --ignore_case_sample \
   --out_file_name betalot_experiments-2022-02-21.csv
 ```
 
 
 ```
-gsutil cp gs://inhouse-xmap-data/user_data_frames/betalot_experiments-2022-02-21.csv ~/'google drive'/'my drive'/projects/beta-av-testing/data/raw/beta-lot-stds-controls-2022-02-21.csv
+gsutil cp gs://inhouse-xmap-data/user_data_frames/betalot_experiments-2022-02-21.csv /home/ddhillon/projects/beta-av-testing/data/raw/beta-lot-stds-controls-2022-02-21.csv
 ```
 
 
 
+## Data 
 
+Which experiments are we looking at? 
 
+```{r}
+raw <- read_csv(here::here("data", "raw", "beta-lot-stds-controls-2022-02-21.csv")) # nolint
 
-## Failure modes   
+raw <- raw %>% 
+  mutate(batch = str_remove(file_name, "_[0-9]+.csv")) %>% 
+  filter(!grepl("20211028_Reproducibilit_Panel2_Plate3", file_name)) %>% 
+   mutate(experiment_date = str_extract(batch, "[0-9]+_")) %>% 
+  mutate(experiment_date = str_extract(batch, "[0-9]+")) %>% 
+  mutate(experiment_date = lubridate::as_date(experiment_date, format = "%Y%d%m")) %>% 
+  mutate(month = lubridate::month(experiment_date), 
+         year = lubridate::year(experiment_date))
+
+raw %>% 
+  count(year)
+raw %>% 
+  count(experiment_date)
+
+raw %>% 
+  #filter(experiment_date == "2021-02-12" | experiment_date == "2021-11-01") %>% 
+  distinct(batch)
+n_batches <- nrow(raw %>% distinct(batch))
+```
+
 
 ```{r}
 bead_data <- raw %>% 
   filter(assay %in% c("WFDC2", "CEA", "IL-8", "IL-1 R2", "TNC", "MUC-16", "FLT3L"))
-```
 
-```{r}
 bead_data %>% 
-  count(xponent_id)
+  count(batch) %>% 
+  DT::datatable()
 ```
 
+## Viz 
+
+**% Bead count failures across all experiments?** 
 
 ```{r}
 bead_data %>% 
@@ -90,12 +130,32 @@ bead_data %>%
   ggplot(.,aes(xponent_id, mean_fails)) + 
   geom_point(color = freenome_colors[1]) + 
   facet_wrap(vars(assay)) + 
-  #theme_classic() + 
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
   labs(title = "% of Bead Count failures")
 ```
 
-How many outliers AFTER bead failure?  
+Exclude experiments that had the standards mixed with salts (doesn't reflect normal process) 
+
+```{r}
+bead_data %>% 
+  filter(sample_type == "standard") %>% 
+  filter(!grepl("Salt", xponent_id)) %>% 
+  mutate(bead_fail = ifelse(bead_count < 35, 1, 0)) %>% 
+  group_by(assay, xponent_id) %>% 
+  summarise(mean_fails = 100*mean(bead_fail)) %>% 
+  ggplot(.,aes(xponent_id, mean_fails)) + 
+  geom_point(color = freenome_colors[1]) + 
+  facet_wrap(vars(assay)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  labs(title = "% of Bead Count failures")
+```
+
+
+
+
+**How many outliers AFTER bead failure?**   
 
 ```{r}
 mod_z_calc <- function(x_vec) {
@@ -109,6 +169,7 @@ mod_z_calc <- function(x_vec) {
 
 bead_data %>% 
   filter(sample_type == "standard") %>% 
+  filter(!grepl("Salt", xponent_id)) %>% 
   mutate(bead_fail = ifelse(bead_count < 35, 1, 0)) %>% 
   filter(bead_fail == 0) %>% 
   group_by(xponent_id, assay, file_name) %>% 
@@ -120,22 +181,28 @@ bead_data %>%
   ggplot(.,aes(xponent_id, mean_fails)) + 
   geom_point(color = freenome_colors[1]) + 
   facet_wrap(vars(assay)) + 
-  #theme_classic() + 
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
   labs(title = "% of Outlier", 
        y = "% of Outliers")
 
 
 ```
 
+## Scenarios  
 
-Can we find out how many times the following occurred?  
+There are 3 ways we could be left with 2 replicates in a given standard  
+
+Can we find out how many times the following occurred in our historical data? 
 
 1. Bead count failed AND after removing that well, there was still an outlier?  
 2. How many times there were bead failures in the same batch and same standard?  
-3. 
+3. After removing the bead fails, how many times does it occur that there are 2 outliers in a standard? 
+
 
 **1**   
+
+~ 5 % of the time 
 
 ```{r}
 bead_fail_wells <- bead_data %>% 
@@ -161,11 +228,15 @@ outlier_wells %>%
 number_1_experiments <- bead_fail_wells %>% 
   inner_join(outlier_wells, by = c("assay", "file_name", "xponent_id")) %>% 
   select(assay, file_name, outlier, bead_fail, xponent_id) 
+number_1_experiments
+100*(nrow(number_1_experiments)/n_batches)
 ```
 
 **2**  
-How many plates where atleast one standard had > 1 bead fail   
+How many plates where at least one standard had > 1 bead fail   
 
+~ 9 % of the time 
+ 
 ```{r}
 number_2_experiemnts <- bead_data %>% 
   filter(sample_type == "standard") %>% 
@@ -174,6 +245,9 @@ number_2_experiemnts <- bead_data %>%
   count(batch, xponent_id, assay) %>% 
   filter(n > 1) %>% 
   distinct(batch)
+
+number_2_experiemnts
+100*(nrow(number_2_experiemnts)/n_batches)
 ```
 
 
@@ -181,6 +255,8 @@ number_2_experiemnts <- bead_data %>%
 **3**   
 
 After removing the bead fails, how many times does it occur that there are 2 outliers in a standard? 
+
+~12 % of the time 
 
 ```{r}
 number_3_experiments <- bead_data %>% 
@@ -195,6 +271,8 @@ number_3_experiments <- bead_data %>%
   count(batch, xponent_id, assay) %>% 
   filter(n > 1) %>% 
   distinct(batch)
+number_3_experiments
+100*(nrow(number_3_experiments)/n_batches)
 ```
 
 
