@@ -22,9 +22,11 @@ knitr::opts_chunk$set(echo = FALSE)
 ## Here are the libraries to install  
 library(tidyverse)  
 library(nls.multstart)
-library(furrr)
+library(broom)
+library(minpack.lm)
 freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
                    '#FECDD1')
+library(furrr)
 ```
 
 ```{r}
@@ -33,6 +35,13 @@ plan(multisession, workers = 8)
 
 
 
+## Data Import 
+```{r eval=FALSE, include=FALSE}
+library(googleCloudStorageR)
+googleAuthR::gar_gce_auth()
+gcs_get_object("gs://inhouse-xmap-data/user_data_frames/betalot_experiments-2022-02-21.csv", saveToDisk="/home/ddhillon/projects/beta-av-testing/data/raw/beta-lot-stds-controls-2022-02-21.csv", 
+               overwrite = TRUE)
+```
 
 
 ```{r}
@@ -54,11 +63,9 @@ raw <-
 ```
 
 
-Pick data we want to work with 
 
-1. No bead failures in any of the standards 
-2. Take experiments that only have 4 standards on our plate (how our process works) 
-3. Exclude standards which have salts mixed in standards  
+## Functions we need 
+
 
 ```{r}
 mod_z_calc <- function(x_vec) {
@@ -69,10 +76,87 @@ mod_z_calc <- function(x_vec) {
   return(mod_z)
   
 }
+### 5PL Recipe 
 
 
+
+logistic_5pl <- function(d, a, net_mfi, c, b, g) {
+  return(d + (a-d)/(a + (net_mfi/c)^b)^g)
+}
+
+fit_5pl <- function(df = NULL){
+  nls.multstart::nls_multstart(standard_expected_concentration ~ 
+                                          logistic_5pl(d, a, median_mfi = median_mfi, 
+                                                       c, b, g), 
+                                        data = df, 
+                                        iter = 100000, 
+                                        modelweights = 1/standard_expected_concentration^2,
+                                        start_lower = c(a = -5, b = -5, c = 100, d = -5, 
+                                                        g = -5), 
+                                        start_upper = c(a = 5, b = 5, c = 200, d = 5, 
+                                                        g = 5), 
+                                        supp_errors = "Y", 
+                                        control = nls.control(maxiter = 10000, 
+                                                              minFactor=1e-7, 
+                                                              tol=1e-5, 
+                                                              printEval=F, 
+                                                              warnOnly=F))
+}
+
+
+fit_5pl_v2 <- function(df = NULL){
+  nls.multstart::nls_multstart(standard_expected_concentration ~ 
+                                          logistic_5pl(d, a, net_mfi = net_mfi, 
+                                                       c, b, g), 
+                                        data = df, 
+                                        iter = 100000, 
+                                        modelweights = 1/net_mfi,
+                                        start_lower = c(a = -1, b = -1, c = 100, d = -1, 
+                                                        g = -1), 
+                                        start_upper = c(a = 5, b = 1, c = 200, d = 1, 
+                                                        g = 1), 
+                                        supp_errors = "Y", 
+                                        control = nls.control(maxiter = 10000, 
+                                                              minFactor=1e-7, 
+                                                              tol=1e-5, 
+                                                              printEval=F, 
+                                                              warnOnly=F))
+}
+
+
+
+fit_5pl_v3 <- function(df = NULL){
+  nls.multstart::nls_multstart(standard_expected_concentration ~ 
+                                          logistic_5pl(d, a, net_mfi = net_mfi, 
+                                                       c, b, g), 
+                                        data = df, 
+                                        iter = 100000, 
+                                        modelweights = 1/rep_sigma^2,
+                                        start_lower = c(a = -1, b = -1, c = 100, d = -1, 
+                                                        g = -1), 
+                                        start_upper = c(a = 5, b = 1, c = 200, d = 1, 
+                                                        g = 1), 
+                                        supp_errors = "Y", 
+                                        control = nls.control(maxiter = 10000, 
+                                                              minFactor=1e-7, 
+                                                              tol=1e-5, 
+                                                              printEval=F, 
+                                                              warnOnly=F))
+}
+
+
+```
+
+Pick data we want to work with 
+
+1. No bead failures in any of the standards 
+2. Take experiments that only have 4 standards in a batch (how our process works) 
+3. Exclude standards which have salts mixed in standards (this isn't reflective of our process)   
+
+```{r}
+## find all the batches that have 4 replicates for each standard (quads) 
 clean_data <- raw %>% 
-  filter(bead_fail == 0) %>% 
+  filter(bead_fail == 0) %>% ## no bead failures 
   filter(sample_type == "standard") %>% 
   filter(!grepl("Salt", xponent_id)) %>% 
   count(batch, xponent_id, assay) %>% 
@@ -85,70 +169,86 @@ clean_std_data <- clean_data %>%
   filter(sample_type == "standard")
 ```
 
-```{r}
-
-```
-
-
-## 5PL Recipe 
-
-
-```{r}
-logistic_5pl <- function(d, a, median_mfi, c, b, g) {
-  return(d + (a-d)/(a + (median_mfi/c)^b)^g)
-}
-
-fit_5pl <- function(df = NULL){
-  nls.multstart::nls_multstart(standard_expected_concentration ~ 
-                                          logistic_5pl(d, a, median_mfi = median_mfi, 
-                                                       c, b, g), 
-                                        data = df, 
-                                        iter = 100000, 
-                                        modelweights = 1/standard_expected_concentration^2,
-                                        start_lower = c(a = -1, b = -1, c = 100, d = -1, 
-                                                        g = -1), 
-                                        start_upper = c(a = 1, b = 1, c = 200, d = 1, 
-                                                        g = 1), 
-                                        supp_errors = "Y", 
-                                        control = nls.control(maxiter = 1000, 
-                                                              minFactor=1e-7, 
-                                                              tol=1e-5, 
-                                                              printEval=F, 
-                                                              warnOnly=F))
-}
-```
+## Modeling   
 
 
 
-
+### Model data 
 
 ```{r}
 mod_data <- clean_std_data %>% 
   group_by(xponent_id, assay, batch) %>% 
   mutate(rep_num = dplyr::row_number(xponent_id)) %>% 
-  select(xponent_id, assay, rep_num, median_mfi, standard_expected_concentration, 
-         calc_conc, pct_recovery, batch) %>% 
+  select(xponent_id, assay, rep_num, median_mfi, 
+         standard_expected_concentration, 
+         calc_conc, pct_recovery, batch, net_mfi) %>% 
   ungroup()
 ```
 
 
 ```{r}
-tmp_mod <- mod_data %>% 
-  filter(assay == "FLT3L") %>% 
-  filter(batch == "20210111_PltStd2_Panel1_P3_B1_20220112") %>% 
-  fit_5pl(df = .)
+tmp_data <- mod_data %>% 
+  filter(assay == "CEA") %>% 
+  filter(batch == "20211103_PlatinumStd_Immuno_Panel2_20211103") 
 
-summary(tmp_mod) 
-AIC(tmp_mod)
-broom::tidy(tmp_mod)
-broom::glance(tmp_mod)
+tmp_mod <- mod_data %>% 
+  filter(assay == "CEA") %>% 
+  filter(batch == "20211103_PlatinumStd_Immuno_Panel2_20211103")  %>% 
+  fit_5pl_v2(df = .)
+
+tmp_mod
+
+tmp_mod_v2 <- mod_data %>% 
+  filter(assay == "CEA") %>% 
+  filter(batch == "20211103_PlatinumStd_Immuno_Panel2_20211103")  %>% 
+  group_by(xponent_id) %>% 
+  mutate(rep_sigma = sd(median_mfi, na.rm = TRUE)) %>% 
+  fit_5pl_v2(df = .)
+
+
+tmp_mod_nlm <- minpack.lm::nlsLM(standard_expected_concentration ~ 
+                                          d + (a-d)/(a + (net_mfi/c)^b)^g, 
+                                 data = tmp_data, start = list(a = -1, b = -1, c = 100, d = -1, 
+                                                        g = -1), weights = 1/net_mfi)
+
+
+tmp_mod_nls <- nlme::gnls(standard_expected_concentration ~ 
+                                          d + (a-d)/(a + (net_mfi/c)^b)^g, 
+                          data = tmp_data, start = list(a = -0.006358, b = 0.407184, c = 12.838165, d = -8.401431, 
+                                                        g = 2.133154))
+
+tmp_mod_nls <- nlme::nlsList(standard_expected_concentration ~ 
+                                          d + (net_mfi), 
+                          data = tmp_data, start = list(d = -1), weights = 1/net_mfi)
+
+
+augment(tmp_mod, newdata = mod_data %>% 
+  filter(assay == "CEA") %>% 
+  filter(batch == "20211103_PlatinumStd_Immuno_Panel2_20211103") ) %>% 
+  mutate(pct_recover_r = 100*.fitted/standard_expected_concentration) %>% 
+  ggplot(., aes(pct_recover_r, pct_recovery)) + 
+  geom_point()
+
+augment(tmp_mod_v2, newdata = mod_data %>% 
+  filter(assay == "CEA") %>% 
+  filter(batch == "20211103_PlatinumStd_Immuno_Panel2_20211103")) %>% 
+  mutate(pct_recover_r = 100*.fitted/standard_expected_concentration) %>% 
+  ggplot(., aes(pct_recover_r, pct_recovery)) + 
+  geom_point()
+
+mod_data %>% 
+  filter(pct_recovery < 200) %>% 
+  ggplot(.,aes(xponent_id, pct_recovery)) + 
+  geom_boxplot() + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
-
+### Simulate Missing Data 
 
 ```{r}
 ## these are all the ways we can get 2 replicates 
-
 all_combs <- combn(4, 2) %>% 
   as_tibble(.name_repair = "unique") %>% 
   janitor::clean_names() %>% 
@@ -175,24 +275,14 @@ create_missing_data <-
       inner_join(., rep_comb) %>%
       bind_rows(tmp_data)
   }
-
-create_missing_data(comb = "x1", standard = "Standard6", data = mod_data)
 ```
-
-
-```{r}
-original_mods <- mod_data %>% 
-  group_by(batch, assay) %>% 
-  nest() %>% 
-  mutate(orig_model = map(data, ~ fit_5pl(df = .x)))
-```
-
 
 Create sets of missing data 
 
-```{r}
+```{r message=FALSE}
 combs <- c("x1", "x2", "x3", "x4", "x5", "x6") 
-stds <- c("Standard1", "Standard2", "Standard3", "Standard4", "Standard5", "Standard6")
+stds <- c("Standard1", "Standard2", "Standard3", "Standard4", "Standard5", 
+          "Standard6")
 
 grid <- tidyr::crossing(combs = combs, stds = stds) %>% 
   mutate(iter = seq(1, nrow(.), by = 1))
@@ -204,31 +294,227 @@ missing_data <- grid %>%
 ```
 
 
-Now we fit a model to each missing data set 
+### Fit Original Data Model 
+
+```{r eval=FALSE, include=FALSE}
+original_mods <- mod_data %>% 
+  group_by(batch, assay) %>% 
+  nest() %>% 
+  ungroup() %>% 
+  mutate(orig_model = map(data, ~ fit_5pl_v2(df = .x)))
+
+#fit model with weights as varaince of mfi 
+
+original_mod_v3 <- mod_data %>% 
+  group_by(assay, batch , xponent_id) %>% 
+  mutate(rep_sigma = sd(net_mfi, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  group_by(batch, assay) %>% 
+  nest() %>% 
+  ungroup() %>% 
+  mutate(orig_model = map(data, ~ fit_5pl_v3(df = .x)))
+
+```
+
+
+saveRDS(original_mods, file = here::here("data", "processed", "models", 
+                                         paste0("std-curve-rep-original", "-" ,
+                                                Sys.Date(), ".rds")))
+```
+
+```{r}
+original_mods <- readRDS(file = here::here("data", "processed", "models", 
+                                           "std-curve-rep-original.rds"))
+
+```
+
+
+
+**fit model with weights as varaince of mfi** 
+
+```{r}
+original_mod_v3 <- mod_data %>% 
+  group_by(assay, batch , xponent_id) %>% 
+  mutate(rep_sigma = sd(net_mfi, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  group_by(batch, assay) %>% 
+  nest() %>% 
+  ungroup() %>% 
+  mutate(orig_model = map(data, ~ fit_5pl_v3(df = .x)))
+
+```
+
+
+
+### Fit the missing data model 
 
 ```{r eval=FALSE, include=FALSE}
 missing_models <- missing_data %>% 
   group_by(batch, assay, combs, stds) %>% 
   nest() %>% 
-  mutate(missing_models = map(data, ~fit_5pl(df = .x))) 
+  mutate(missing_models = map(data, ~fit_5pl_v2(df = .x))) 
+
+missing_models <- missing_models %>% 
+  ungroup() %>%
+  rename(fits = missing_models)
+
+missing_models <- missing_models %>% 
+  rename(missing_data = data)
+
 ```
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 ## save object 
-saveRDS(missing_models, file = here::here("data", "processed", "models", "std-curve-rep.rds"))
+saveRDS(missing_models, file = here::here("data", "processed", 
+                                          "models", "std-curve-rep.rds"))
 ```
+
+
+```{r}
+missing_models <- readRDS(file = here::here("data", "processed", 
+                                            "models", "std-curve-rep.rds"))
+```
+
+
+
+## Comparisons  
+
+Metrics to compare on 
+
+
+### Recovery  
+
 
 ```{r}
 missing_models %>% 
+  glimpse() 
+original_mods %>% 
+  glimpse()
+```
+
+
+```{r}
+original_recov <- original_mods %>%
+  ungroup() %>%
+  mutate(pred_frame = map2(orig_model, data, ~ augment(x = .x, newdata = .y))) %>%
+  select(-c(data, orig_model)) %>%
+  unnest(cols = pred_frame) %>%
+  mutate(pct_recovery_r = 100 * .fitted / standard_expected_concentration) %>% 
+  select(assay, batch, xponent_id, pct_recovery_r) %>% 
+  group_by(assay, batch, xponent_id) %>% 
+  summarise(pct_recovery_original = mean(pct_recovery_r)) %>% 
+  ungroup()
+
+original_recov %>% 
+  filter(is.na(pct_recovery_original))
+
+
+missing_recov <- missing_models %>% 
   ungroup() %>% 
-  slice(1) %>% 
-  rename(fits = missing_models) 
+  #slice(100) %>% 
+  mutate(pred_frame = map2(fits, data, ~ augment(x = .x, newdata = .y))) %>%
+  select(-c(data, fits)) %>%
+  unnest(cols = pred_frame) %>%
+  mutate(pct_recovery_missing = 100 * .fitted / standard_expected_concentration) %>% 
+  group_by(combs, stds, assay, batch, xponent_id) %>% 
+  summarise(pct_recovery_missing = mean(pct_recovery_missing)) %>% 
+  ungroup()
+  
+missing_recov %>% 
+  filter(is.na(pct_recovery_missing))
+
+```
+
+
+```{r}
+comb_recov <- missing_recov %>% 
+  select(c(combs, stds, assay, batch, xponent_id, pct_recovery_missing)) %>% 
+  left_join(., original_recov, by = c("assay", "batch", "xponent_id"))
+```
+
+```{r fig.height=4, fig.width=10}
+comb_recov %>% 
+  mutate(diff = (pct_recovery_original - pct_recovery_missing)) %>% 
+  mutate(perturbed = ifelse(stds == xponent_id, "perturbed_standard", 
+                            "not_perturbed"), 
+         panel = ifelse(assay %in% c("CEA", "TNC", "WFDC2"), "Panel_2", "Panel_1")) %>% 
+  filter(panel == "Panel_1") %>% 
+  ggplot(.,aes(xponent_id, diff, color = perturbed)) + 
+  geom_boxplot() + 
+  facet_grid(cols = vars(stds), rows = vars(assay)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  scale_color_manual(values = c(freenome_colors[1], freenome_colors[2])) + 
+  geom_hline(yintercept = c(-20, 20), linetype = 2)
+
+comb_recov %>% 
+  mutate(diff = (pct_recovery_original - pct_recovery_missing)) %>% 
+  mutate(perturbed = ifelse(stds == xponent_id, "perturbed_standard", 
+                            "not_perturbed"), 
+         panel = ifelse(assay %in% c("CEA", "TNC", "WFDC2"), "Panel_2", "Panel_1")) %>% 
+  filter(panel == "Panel_2") %>% 
+  ggplot(.,aes(xponent_id, diff, color = perturbed)) + 
+  geom_boxplot() + 
+  facet_grid(cols = vars(stds), rows = vars(assay)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  scale_color_manual(values = c(freenome_colors[1], freenome_colors[2])) + 
+  geom_hline(yintercept = c(-20, 20), linetype = 2)
+
+```
+
+
+### Distribution of the intact experiment recoveries  
+
+```{r}
+mod_data %>% 
+  filter(pct_recovery < 200) %>% 
+  ggplot(.,aes(xponent_id, pct_recovery)) + 
+  geom_boxplot() + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+original_recov %>% 
+  filter(pct_recovery_original < 200) %>% 
+  ggplot(.,aes(xponent_id, pct_recovery_original)) + 
+  geom_boxplot() + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
 
 
+```{r}
+original_mods %>% 
+  ungroup() %>% 
+  mutate(pred_frame = map2(orig_model, data, ~ augment(x = .x, newdata = .y))) %>%
+  unnest(cols = pred_frame) %>%
+  mutate(pct_recovery_r = 100 * .fitted / standard_expected_concentration) %>% 
+  filter(xponent_id == "Standard1") %>% 
+  ggplot(.,aes(calc_conc, .fitted)) + 
+  geom_point() + 
+  facet_grid(rows = vars(assay))
 
 
+v2_original_mods %>% 
+  ungroup() %>%
+  mutate(pred_frame = map2(orig_model, data, ~ augment(x = .x, newdata = .y))) %>%
+  select(-c(data, orig_model)) %>%
+  unnest(cols = pred_frame) %>%
+  mutate(pct_recovery_r = 100 * .fitted / standard_expected_concentration) %>% 
+  select(assay, batch, xponent_id, pct_recovery_r) %>% 
+  group_by(assay, batch, xponent_id) %>% 
+  summarise(pct_recovery_original = mean(pct_recovery_r)) %>% 
+  ungroup() %>% 
+  ggplot(.,aes(xponent_id, pct_recovery_original)) + 
+  geom_boxplot() + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
 
 
 
