@@ -71,28 +71,6 @@ mod_z_calc <- function(x_vec) {
   return(mod_z)
   
 }
-### 5PL Recipe 
-
-
-
-fit_5pl_v2 <- function(df = NULL){
-  nls.multstart::nls_multstart(standard_expected_concentration ~ 
-                                          logistic_5pl(d, a, net_mfi = net_mfi, 
-                                                       c, b, g), 
-                                        data = df, 
-                                        iter = 100000, 
-                                        modelweights = 1/net_mfi,
-                                        start_lower = c(a = -1, b = -1, c = 100, d = -1, 
-                                                        g = -1), 
-                                        start_upper = c(a = 5, b = 1, c = 200, d = 1, 
-                                                        g = 1), 
-                                        supp_errors = "Y", 
-                                        control = nls.control(maxiter = 1024, 
-                                                              minFactor=1e-7, 
-                                                              tol=1e-5, 
-                                                              printEval=F, 
-                                                              warnOnly=F))
-}
 ```
 
 Pick data we want to work with 
@@ -134,6 +112,7 @@ mod_data <- clean_std_data %>%
 ```
 
 ```{r eval=FALSE}
+## we do this beacuse I needed Adam's help with the fitting the models in python so he could access the data 
 write_csv(mod_data, here::here("data", "processed", "std-curve-replicate-analysis", 
                                "original_mod_data.csv"))
 ```
@@ -165,7 +144,7 @@ create_missing_data <-
     
     data %>%
       dplyr::filter(xponent_id == standard) %>%
-      inner_join(., rep_comb) %>%
+      inner_join(., rep_comb, by = "rep_num") %>%
       bind_rows(tmp_data)
   }
 ```
@@ -184,16 +163,11 @@ missing_data <- grid %>%
   rowwise(iter) %>% 
   mutate(data = list(create_missing_data(combs, stds, data = mod_data))) %>% 
   unnest(cols = data)
-
-missing_data %>% 
-  filter(stds == "Standard1") %>% 
-  filter(assay == "CEA") %>% 
-  filter(combs == "x2") %>% 
-  filter(batch == "20211103_PlatinumStd_Immuno_Panel2_20211103")
 ```
 
 
 ```{r eval=FALSE}
+## we export this out as well 
 write_csv(missing_data, here::here("data", "processed", 
                                    "std-curve-replicate-analysis", "missing-sim-data.csv"))
 ```
@@ -201,7 +175,7 @@ write_csv(missing_data, here::here("data", "processed",
 
 
 
-## Scipy implementation 
+### Scipy implementation   
 
 ```{r}
 library(reticulate)
@@ -279,6 +253,7 @@ def parallel_runner(sub_df):
 !pwd
 ```
 
+
 ```{python}
 n_cpu = 8
 PARALLEL = True
@@ -289,9 +264,10 @@ PARALLEL = True
 missing_df = pd.read_csv('/home/ddhillon/projects/beta-av-testing/data/processed/std-curve-replicate-analysis/missing-sim-data.csv')
 original_df = pd.read_csv('/home/ddhillon/projects/beta-av-testing/data/processed/std-curve-replicate-analysis/original_mod_data.csv')
 ```
+
 ### Fit Clean Data Model  
 
-Fit models to original data to confirm implementation 
+Fit models to original data   
 
 ```{python}
 if PARALLEL:
@@ -306,23 +282,57 @@ original_result_df = pd.concat(result_df)
 ```
 
 
+
+
+Confirm with the xPonent concentrations 
+
+For S3-S6, the concordance in recoveries very high, but there is a fair bit of discordance and noise in the first 2 standards for some proteins. For many of our proteins, this is already above our ULOQ. 
+
 ```{r}
 py$original_result_df %>% 
   mutate(pct_recovery_scipy = 100*(inferred_concentration)/standard_expected_concentration) %>% 
   ggplot(.,aes(xponent_id, pct_recovery)) + 
   geom_boxplot() + 
-  facet_grid(cols = vars(assay))
+  theme_bw() + 
+  facet_grid(cols = vars(assay)) + 
+  geom_hline(yintercept = 100, color = freenome_colors[1]) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 py$original_result_df %>% 
   mutate(pct_recovery_scipy = 100*(inferred_concentration)/standard_expected_concentration) %>% 
   ggplot(.,aes(xponent_id, pct_recovery_scipy)) + 
   geom_boxplot() + 
-  facet_grid(cols = vars(assay))
+  theme_bw() + 
+  facet_grid(cols = vars(assay)) + 
+  geom_hline(yintercept = 100, color = freenome_colors[1]) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
+
+
+## some edge cases in CEA 
 py$original_result_df %>% 
   mutate(pct_recovery_scipy = 100*(inferred_concentration)/standard_expected_concentration) %>%
   filter(pct_recovery_scipy > 200) %>% 
   filter(assay == "CEA")
+
+
+py$original_result_df %>% 
+  mutate(pct_recovery_scipy = 100*(inferred_concentration)/standard_expected_concentration) %>% 
+  filter(pct_recovery_scipy < 200) %>% 
+  ggplot(.,aes(pct_recovery, pct_recovery_scipy)) +
+  geom_point() + 
+  facet_grid(rows = vars(xponent_id), 
+             cols = vars(assay)) + 
+  theme_bw()
+
+py$original_result_df %>% 
+  mutate(pct_recovery_scipy = 100*(inferred_concentration)/standard_expected_concentration) %>% 
+  filter(pct_recovery_scipy > 200) %>% 
+  ggplot(.,aes(pct_recovery, pct_recovery_scipy)) +
+  geom_point() + 
+  facet_grid(rows = vars(xponent_id), 
+             cols = vars(assay)) + 
+  theme_bw()
 
 ```
 
@@ -347,12 +357,14 @@ missing_result_df = pd.concat(result_df)
 missing_recov <- py$missing_result_df %>% 
   mutate(pct_recovery_missing = 100*(inferred_concentration)/standard_expected_concentration) %>% 
   group_by(assay, batch, xponent_id, combs, stds) %>% 
-  summarise(pct_recovery_missing = mean(pct_recovery_missing))
+  summarise(pct_recovery_missing = mean(pct_recovery_missing)) %>% 
+  ungroup()
 
 original_recov <- py$original_result_df %>% 
   mutate(pct_recovery_original = 100*(inferred_concentration)/standard_expected_concentration) %>% 
   group_by(assay, batch, xponent_id) %>% 
-  summarise(pct_recovery_original = mean(pct_recovery_original))
+  summarise(pct_recovery_original = mean(pct_recovery_original)) %>% 
+  ungroup()
 ```
 
 
@@ -395,6 +407,101 @@ comb_recov %>%
   geom_hline(yintercept = c(-20, 20), linetype = 2)
 
 ```
+
+
+## Natural Tolerance Limits  
+
+We want to compare the results of fitting a curve without a few replicates against what would happen if we simply ran the batch again. If the noise associated with less replicates <= noise associated with running a new batch, we can simply go ahead and fit the curve again. But if this noise is > noise associated with running a new batch, we should then choose to run a new batch.  
+
+
+
+```{r}
+## here we don't average over the quads 
+natural_limits_V1 <- py$original_result_df %>% 
+  mutate(pct_recovery_original = 100*(inferred_concentration)/standard_expected_concentration) %>%
+  filter(pct_recovery_original < 1000) %>% 
+  group_by(xponent_id, assay) %>%
+  nest() %>% 
+  mutate(tol_df = map(data, ~ tolerance::normtol.int(.x$pct_recovery_original, 
+                                                     method = "EXACT", side = 2, m = 500, 
+                           log.norm = FALSE, P = 0.95))) %>% 
+  unnest(cols = tol_df) %>% 
+  janitor::clean_names() %>%
+  mutate(lower_diff = (x_bar - x2_sided_lower), 
+         upper_diff = (x2_sided_upper - x_bar)) %>% 
+  select(assay, xponent_id, lower_diff, upper_diff) %>% 
+  ungroup()
+  #group_by(assay, batch, xponent_id) %>% 
+  #summarise(pct_recovery_original = mean(pct_recovery_original)) %>% 
+  #ungroup()
+
+## here we average over the quads
+natural_limits_V2 <- original_recov %>% 
+  filter(pct_recovery_original < 1000) %>% ## there are a few edge cases which we ignore  
+  group_by(xponent_id, assay) %>%
+  nest() %>% 
+  mutate(tol_df = map(data, ~ tolerance::normtol.int(.x$pct_recovery_original, 
+                                                     method = "EXACT", side = 2, m = 500, 
+                           log.norm = FALSE, P = 0.95))) %>% 
+  unnest(cols = tol_df) %>% 
+  janitor::clean_names() %>%
+  mutate(lower_diff = (x_bar - x2_sided_lower), 
+         upper_diff = (x2_sided_upper - x_bar)) %>% 
+  select(assay, xponent_id, lower_diff, upper_diff) %>% 
+  ungroup()
+
+natural_limits_V1
+natural_limits_V2
+```
+
+
+
+**How does the missing replicate models compare against natural variation?** 
+
+```{r fig.height=10}
+comb_recov %>% 
+  mutate(diff = (pct_recovery_original - pct_recovery_missing)) %>% 
+  filter(diff > -200) %>% 
+  mutate(perturbed = ifelse(stds == xponent_id, "perturbed_standard", 
+                            "not_perturbed"), 
+         panel = ifelse(assay %in% c("CEA", "TNC", "WFDC2"), "Panel_2", "Panel_1")) %>% 
+  left_join(., natural_limits_V2, by = c("assay", "xponent_id")) %>% 
+  filter(panel == "Panel_1") %>% 
+  ggplot(.,aes(xponent_id, diff, color = perturbed)) + 
+  geom_boxplot() + 
+  #geom_errorbar(aes(ymin = lower_error, ymax = upper_error)) + 
+  geom_errorbar(aes(ymin = -lower_diff, ymax = upper_diff), color = freenome_colors[1]) + 
+  facet_grid(rows = vars(assay), cols = vars(stds)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  scale_color_manual(values = c(freenome_colors[2], freenome_colors[3])) 
+
+
+comb_recov %>% 
+  mutate(diff = (pct_recovery_original - pct_recovery_missing)) %>% 
+  filter(diff > -200) %>% 
+  mutate(perturbed = ifelse(stds == xponent_id, "perturbed_standard", 
+                            "not_perturbed"), 
+         panel = ifelse(assay %in% c("CEA", "TNC", "WFDC2"), "Panel_2", "Panel_1")) %>% 
+  left_join(., natural_limits_V2, by = c("assay", "xponent_id")) %>% 
+  filter(panel == "Panel_2") %>% 
+  ggplot(.,aes(xponent_id, diff, color = perturbed)) + 
+  geom_boxplot() + 
+  #geom_errorbar(aes(ymin = lower_error, ymax = upper_error)) + 
+  geom_errorbar(aes(ymin = -lower_diff, ymax = upper_diff), color = freenome_colors[1], 
+                alpha = 0.5) + 
+  facet_grid(rows = vars(assay), cols = vars(stds)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  scale_color_manual(values = c(freenome_colors[2], freenome_colors[3])) 
+```
+
+
+
+
+
+
+
 
 
 
