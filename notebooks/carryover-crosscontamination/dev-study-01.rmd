@@ -1,0 +1,405 @@
+---
+title: "Carrover Cross Contamination"
+author: "Dilsher Singh Dhillon"
+date: "`r format(Sys.time(), '%d %B,%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float : true 
+---
+<style>
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+    background-color: #948DFF;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+
+```{r}
+## Here are the libraries to install  
+library(tidyverse)  
+#library(emmeans)  
+#library(janitor)  
+#library(broom)
+#library(car)
+#library(readxl)
+library(here)
+library(googleCloudStorageR)
+library(plotly)
+library(conflr)
+
+freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
+                   '#FECDD1')
+```
+
+
+Use the code below to download the data using PATE functions which stores the output on GCS 
+
+```{r eval=FALSE, echo=TRUE}
+pate-rnd xmap-preprocessor --include_file_str Carryover_cross 
+
+pate-rnd xmap-collector --include_file_str Carryover \
+--out_file_name mv_carryover_study.csv
+```
+
+Using the command line tools, we import the data from GCS to JH 
+```{r eval=FALSE, echo=TRUE}
+gsutil cp gs://inhouse-xmap-data/user_data_frames/mv_carryover_study.csv 
+/home/ddhillon/projects/beta-av-testing/data/raw/mv_carryover_study.csv
+```
+
+
+```{r}
+raw_data <- read_csv(here::here("data", "raw", "mv_carryover_study.csv")) %>% 
+  mutate(plate = str_match(file_name, "P2\\s*(.*?)\\s*_2")[, 2])  %>% ## this indicates the plate order 
+  mutate(plate_type = ifelse(plate == "_Plate1" | plate == "_Plate4", "blank_plate", "sample_plate")) %>% 
+  filter(assay == "CEA" | assay == "WFDC2" | assay == "TNC")
+```
+
+```{r eval=FALSE}
+## for karen 
+raw_data %>% 
+  write_csv(here::here("data", "processed", "carryover-dev.csv"))
+```
+
+
+```{r}
+raw_data %>% 
+  filter(plate_type == "")
+```
+
+
+
+
+## Introduction 
+
+[This page](https://freenome.atlassian.net/wiki/spaces/CBAD/pages/2255388808/Carryover+Cross-contamination+Study#Initial-Carryover-study-(MV)) details the design  
+
+[Plate 1 Benchling](https://freenome.benchling.com/freenome/f/lib_rLUfj3iF-06-guardbanding-for-automation/etr_GCp2xvP4-clin-lab-carryover-and-cross-contamination/edit)
+
+[Plate 2 Benchling](https://freenome.benchling.com/freenome/f/lib_rLUfj3iF-06-guardbanding-for-automation/etr_GCp2xvP4-clin-lab-carryover-and-cross-contamination/edit)
+
+[Plate 3 Benchling](https://freenome.benchling.com/freenome/f/lib_rLUfj3iF-06-guardbanding-for-automation/etr_GCp2xvP4-clin-lab-carryover-and-cross-contamination/edit)
+
+[Plate 4 Benchling](https://freenome.benchling.com/freenome/f/lib_rLUfj3iF-06-guardbanding-for-automation/etr_GCp2xvP4-clin-lab-carryover-and-cross-contamination/edit)
+
+2 plates - only assay buffer and 2 additional plates with a checkerboard pattern  
+
+
+**Note** 
+The way the experiment was planned was to first run 2 blank plates and then the 2 checkerboard pattern of plates. However, it looks like this was not the case. The assay buffer only and checkerboard plates were run alternate order. 
+
+We will only be able to use the plate 1 to estimate what the distribution of the blanks look like. But in a way, this allows us to see that setting our acceptance criteria based off of one plate only isn't appropriate - we can see this under the `Estimate LoB` tab where if we apply the metric set by plate 1 on plate 4, it fails the acceptance criteria.  
+
+In addition, we also find some row effects in the sample intensities. This is reflective of the fact that xmap moves from A1-A24, and then back down to B1. This means, the last row gets read at the very end, which is what we see here.  
+
+
+
+## Viz  
+
+### Intensity Heatmap  
+
+
+```{r}
+plot_heatmap <- function(df = raw_data, protein = "NULL") {
+  p <- df %>% 
+    #filter(xponent_id == "Assay Buffer") %>% 
+    filter(assay == protein) %>% 
+    ggplot(aes(well_column, well_row, fill = median_mfi)) + 
+    geom_tile() + 
+    facet_grid(rows = vars(plate)) + 
+    theme_bw() + 
+    labs(title = paste0(protein, " Intensity heatmap")) + 
+    scale_fill_gradientn(colors = freenome_colors)
+  ggplotly(p)
+}
+proteins <- c("CEA", "TNC", "WFDC2")
+plots <- map(proteins, ~ plot_heatmap(df = raw_data, protein = .x))
+htmltools::tagList(plots)
+```
+
+### Assay Buffer Heatmap  
+
+```{r}
+plot_heatmap <- function(df = raw_data, protein = "NULL") {
+  p <- df %>% 
+    filter(xponent_id == "Assay Buffer") %>% 
+    filter(assay == protein) %>% 
+    ggplot(aes(well_column, well_row, fill = median_mfi)) + 
+    geom_tile() + 
+    facet_grid(rows = vars(plate)) + 
+    theme_bw() + 
+    labs(title = paste0(protein, " Assay Buffer only")) + 
+    scale_fill_gradientn(colors = freenome_colors)
+  ggplotly(p)
+}
+proteins <- c("CEA", "TNC", "WFDC2")
+plots <- map(proteins, ~ plot_heatmap(df = raw_data, protein = .x))
+htmltools::tagList(plots)
+```
+
+
+```{r eval=FALSE}
+raw_data %>% 
+  filter(plate == "_Plate2" | plate == "_Plate3") %>% 
+  filter(xponent_id == "Assay Buffer") %>% 
+  ggplot(.,aes(plate, median_mfi)) + 
+  geom_boxplot() + 
+  facet_grid(cols = vars(assay)) +
+  theme_bw()
+```
+
+
+### Density Plot 
+
+Here we look at the overall distribution of the assay buffer wells in both the `sample` plates and the `blank` plate. The distribution of the MFIs look very similar across the two plates. 
+
+
+```{r}
+raw_data %>% 
+  filter(xponent_id == "Assay Buffer") %>% 
+  filter(plate != "_Plate4") %>% 
+  ggplot(.,aes(median_mfi, group = plate_type)) + 
+  geom_density(aes(color = plate_type)) + 
+  facet_grid(rows = vars(assay)) + 
+  theme_bw()
+```
+
+
+## Location effects  
+
+### Row 
+
+xMAP reads from A1 - A24 and then comes back and reads B1 - signal decreasing over rows?  
+Should we have one set of standards on the top 2 rows and another on the bottom 2 rows? 
+
+Ensure model training samples are randomized on the plate to avoid any plate effect confounds? 
+
+*Average MFI for assay buffer in each row* 
+```{r}
+raw_data %>% 
+  filter(xponent_id == "Assay Buffer") %>% 
+  group_by(assay, plate, well_row) %>% 
+  summarise(median_mfi = mean(median_mfi)) %>% 
+  ggplot(.,aes(well_row, median_mfi)) + 
+  geom_point(aes(color = plate)) + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() 
+```
+
+*Average HC by row*   
+
+Also plate 2 and plate 3 differences here - the same flexmap was used  
+
+```{r}
+raw_data %>% 
+  filter(xponent_id == "CRCP2QC1") %>% 
+  group_by(assay, plate, well_row) %>% 
+  summarise(median_mfi = mean(median_mfi)) %>% 
+  ggplot(.,aes(well_row, median_mfi)) + 
+  geom_point(aes(color = plate)) + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw()
+```
+
+### Column
+
+*Average MFI for assay buffer in each row*   
+
+```{r}
+raw_data %>% 
+  filter(xponent_id == "Assay Buffer") %>% 
+  group_by(assay, plate, well_column) %>% 
+  summarise(median_mfi = mean(median_mfi)) %>% 
+  ggplot(.,aes(well_column, median_mfi)) + 
+  geom_point(aes(color = plate)) + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() 
+```
+
+*Average HC by row*   
+
+
+```{r}
+raw_data %>% 
+  filter(xponent_id == "CRCP2QC1") %>% 
+  group_by(assay, plate, well_column) %>% 
+  summarise(median_mfi = mean(median_mfi)) %>% 
+  ggplot(.,aes(well_column, median_mfi)) + 
+  geom_point(aes(color = plate)) + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw()
+```
+
+
+
+
+## Estimate LoB 
+
+From the Plate 1 - we will estimate the LoB using 2 methods   
+1. 95th percentile   
+2. 3 SD    
+
+
+
+```{r echo=TRUE}
+lob <- raw_data %>% 
+  filter(plate == "_Plate1") %>% 
+  filter(xponent_id == "Assay Buffer") %>% 
+  group_by(assay) %>% 
+  summarise(p_95 = quantile(median_mfi, 0.95), 
+            sd_3 = round(mean(median_mfi) + 3*sd(median_mfi), 3)) %>% 
+  ungroup() 
+lob %>% 
+  DT::datatable()
+```
+<br> 
+<br> 
+
+
+**How many times do the assay buffer wells in the checkerboard plate exceed the p95**    
+
+<br> 
+
+```{r}
+raw_data %>% 
+  filter(plate == "_Plate2" | plate == "_Plate3") %>% 
+  filter(xponent_id == "Assay Buffer") %>% 
+  left_join(., lob) %>% 
+  mutate(exceeds_p95 = median_mfi > p_95, 
+         exceeds_3sd = median_mfi > sd_3) %>% 
+  count(assay, exceeds_p95) %>% 
+  group_by(assay) %>% 
+  mutate(perc = round(100*(n/ sum(n)), 3)) %>% 
+  DT::datatable()
+```
+
+**How many times do the assay buffer wells exceed the 3SD LOB**    
+*If we assume Normal Distribution, this should be < 0.3 %*  
+
+
+<br> 
+
+*No wells in TNC exceed 3SD*   
+*< 1 % of the wells for CEA and WFDC2 exceed the 3SD limit*    
+
+
+```{r}
+raw_data %>% 
+  filter(plate == "_Plate2" | plate == "_Plate3") %>% 
+  filter(xponent_id == "Assay Buffer") %>% 
+  left_join(., lob) %>% 
+  mutate(exceeds_p95 = median_mfi > p_95, 
+         exceeds_3sd = median_mfi > sd_3) %>% 
+  count(assay, exceeds_3sd) %>% 
+  group_by(assay) %>% 
+  mutate(perc = 100*(n/ sum(n))) %>% 
+  DT::datatable()
+```
+
+
+
+
+<br> 
+
+**What if we applied this criteria on plate 4** 
+
+Even for a purely blank plate, we still find that for CEA and TNC, > 6 % of the wells exceed the `p95`, even though only 5% should. 
+
+```{r}
+raw_data %>% 
+  filter(plate == "_Plate4") %>% 
+  filter(xponent_id == "Assay Buffer") %>% 
+  left_join(., lob) %>% 
+  mutate(exceeds_p95 = median_mfi > p_95, 
+         exceeds_3sd = median_mfi > sd_3) %>% 
+  count(assay, exceeds_p95) %>% 
+  group_by(assay) %>% 
+  mutate(perc = round(100*(n/ sum(n)), 3)) %>% 
+  DT::datatable()
+```
+
+
+
+
+
+## Carryover 
+
+For carryover, we will only look at Plate 2 and Plate 3 which are checkerboard pattern plates. 
+
+```{r}
+raw_data %>% 
+  filter(plate == "_Plate2" | plate == "_Plate3") %>% 
+  filter(xponent_id == "Assay Buffer") %>% 
+  ggplot(.,aes(median_mfi)) + 
+  geom_density(aes(color = plate))+ 
+  facet_grid(cols = vars(assay)) +
+  theme_bw()
+```
+
+```{r}
+plot_heatmap <- function(df = raw_data, protein = "NULL") {
+  p <- df %>% 
+    filter(xponent_id == "Assay Buffer") %>% 
+    filter(plate == "_Plate2" | plate == "_Plate3") %>% 
+    filter(assay == protein) %>% 
+    ggplot(aes(well_column, well_row, fill = median_mfi)) + 
+    geom_tile() + 
+    facet_grid(rows = vars(plate)) + 
+    theme_bw() + 
+    labs(title = paste0(protein, " Assay Buffer only")) + 
+    scale_fill_gradientn(colors = freenome_colors)
+  ggplotly(p)
+}
+proteins <- c("CEA", "TNC", "WFDC2")
+plots <- map(proteins, ~ plot_heatmap(df = raw_data, protein = .x))
+htmltools::tagList(plots)
+```
+
+
+
+
+
+
+## Conclusions  
+
+**P95**  
+
+When we see how many times assay buffer wells in the sample plates exceed p95, this is > 5 %, whereas we would expect <= 5 % to be exceed this. Since we only used plate 1 in the estimation of p95, even when we apply this critera in plate 4, we still see > 5 % failures.  
+
+
+So in our final study, we want to run 2-3 blanks plates across different instruments to estimate this threshold and then run our checkerboard plates. 
+
+
+**3SD**  
+
+When we do the same thing with 3SD LoB estimate, we see that  
+1. CEA exceeds 0.85 % of the time  
+2. TNC does not exceed at all 
+3. WFDC2 exceeds 0.28 % of the time.   
+
+Assuming normal distribution, we would expect this to occur < 0.3 % of the time.  
+
+
+It is high risk to set our acceptance criteria using the LoB generated from the LoX studies. Instead, we could run multiple blank plates on the same instruments to estimate the 3SD of our assay buffer and then run the checkerboard plates.  
+
+
+
+
+
+
+**Output** 
+
+```{r echo=TRUE, eval=FALSE}
+gsutil cp /home/ddhillon/projects/beta-av-testing/notebooks/carryover-crosscontamination/outputs/dev-study-01.html gs://freenome-user-data-ddhillon/outputs
+```
+
+
+
+
+
+
+

@@ -68,7 +68,6 @@ pate-rnd xmap-collector --include_file_str 20220119_WC_P1vP6 \
   --include_file_str  Matrix_Buffer_TritonX \
   --include_file_str  20220215_WCFunctional \
   --include_file_str  20220217_Linearity_Streck \
-  --include_lot_str   "lot_number"
   --include_sample_str Standard --include_sample_str Buffer --include_sample_str Background --include_sample_str QC --include_sample_str RC  --ignore_case_sample \
   --out_file_name betalot_experiments-2022-02-21.csv
 ```

@@ -21,8 +21,8 @@ knitr::opts_chunk$set(echo = FALSE)
 ```{r}
 ## Here are the libraries to install  
 library(tidyverse)  
-#library(nls.multstart)
-#library(broom)
+library(nls.multstart)
+library(broom)
 #library(minpack.lm)
 freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
                    '#FECDD1')
@@ -31,6 +31,43 @@ freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B',
 
 
 ## Data Import 
+
+Ran a PATE command that then saved the file in the location below in GCS. Use `googleCloudStorageR` to import the data in JH and read from there 
+
+
+```
+pate-rnd xmap-collector --include_file_str 20220119_WC_P1vP6 \
+  --include_file_str  20220120_ShakeSpd_1000rpm_Panel1_Plate1 \
+  --include_file_str  20220120_ShakeSpd_1200rpm_Panel1_Plate2 \
+  --include_file_str  20220120_ShakeSpd_1500rpm_Panel1_Plate3 \
+  --include_file_str  20220120_ShakeSpd_1000rpm_Panel2_Plate1 \
+  --include_file_str  20220120_ShakeSpd_1200rpm_Panel2_Plate2 \
+  --include_file_str  20220120_ShakeSpd_1500rpm_Panel2_Plate3 \
+  --include_file_str  20220120_ShakeSpd_1200rpm_Panel2_Plate2 \
+  --include_file_str  20220120_ShakeSpd_1500rpm_Panel2_Plate2 \
+  --include_file_str  Beta \
+  --include_file_str  Interf \
+  --include_file_str  PltStd \
+  --include_file_str  Endogenous \
+  --include_file_str  Exogenous \
+  --include_file_str  Platinum \
+  --include_file_str  Reproducibility \
+  --include_file_str  Donor_Screening \
+  --include_file_str  PlatinumStd \
+  --include_file_str  HamiltonEquiv\
+  --include_file_str  ShakingCompare \
+  --include_file_str  20211221_DLS_Matrix_Int \
+  --include_file_str  20220124_BufferAdditives \
+  --include_file_str  20220208_CRC_EDTA \
+  --include_file_str  Matrix_Buffer_TritonX \
+  --include_file_str  20220215_WCFunctional \
+  --include_file_str  20220217_Linearity_Streck \
+  --include_sample_str Standard --include_sample_str Buffer --include_sample_str Background --include_sample_str QC --include_sample_str RC  --ignore_case_sample \
+  --out_file_name betalot_experiments-2022-02-21.csv
+```
+
+
+
 ```{r eval=FALSE, include=FALSE}
 library(googleCloudStorageR)
 googleAuthR::gar_gce_auth()
@@ -59,8 +96,7 @@ raw <-
 
 
 
-## Functions we need 
-
+**Functions we need**   
 
 ```{r}
 mod_z_calc <- function(x_vec) {
@@ -76,8 +112,9 @@ mod_z_calc <- function(x_vec) {
 Pick data we want to work with 
 
 1. No bead failures in any of the standards 
-2. Take experiments that only have 4 standards in a batch (how our process works) 
+2. Take experiments that only have 4 quads for each standard/calibrator in a batch (how our process works) 
 3. Exclude standards which have salts mixed in standards (this isn't reflective of our process)   
+    *There were a couple experiments where the dev team was troubleshooting issues other than bead count using salts in standards* 
 
 ```{r}
 ## find all the batches that have 4 replicates for each standard (quads) 
@@ -108,23 +145,38 @@ mod_data <- clean_std_data %>%
   select(xponent_id, assay, rep_num, median_mfi, 
          standard_expected_concentration, 
          calc_conc, pct_recovery, batch, net_mfi) %>% 
-  ungroup()
+  ungroup() 
+
+mod_data <- mod_data %>% 
+  filter(net_mfi > 0)
 ```
 
 ```{r eval=FALSE}
 ## we do this beacuse I needed Adam's help with the fitting the models in python so he could access the data 
 write_csv(mod_data, here::here("data", "processed", "std-curve-replicate-analysis", 
-                               "original_mod_data.csv"))
+                               "original_mod_data_positive_net_mfi.csv"))
 ```
 
-### Simulate Missing Data 
+### Simulate Missing Data  
+
+To simulate missing data - 
+
+1. We create missing combinations of 4 replicates - there are ways 2 replicates can end up from a set of 4 replicates.  
+[1,2] , [1,3], [1,4] , [2,3], [2,4], [3,4]  
+2. Pick a standard for each protein, pick one set of duplicates for that standard from the above 6 combinations. 
+3. Fit a curve 
+
+Repeat this for every standard 
 
 ```{r}
-## these are all the ways we can get 2 replicates 
-all_combs <- combn(4, 2) %>% 
-  as_tibble(.name_repair = "unique") %>% 
-  janitor::clean_names() %>% 
-  tidyr::pivot_longer(., cols =c(x1:x6), names_to = "sam", values_to = "rep_num")
+## these are all the ways we can get 2 replicates
+all_combs <- combn(4, 2) %>%
+  as_tibble(.name_repair = "unique") %>%
+  janitor::clean_names() %>%
+  tidyr::pivot_longer(.,
+                      cols = c(x1:x6),
+                      names_to = "sam",
+                      values_to = "rep_num")
 ```
 
 
@@ -152,16 +204,22 @@ create_missing_data <-
 Create sets of missing data 
 
 ```{r message=FALSE}
-combs <- c("x1", "x2", "x3", "x4", "x5", "x6") 
-stds <- c("Standard1", "Standard2", "Standard3", "Standard4", "Standard5", 
-          "Standard6")
+combs <- c("x1", "x2", "x3", "x4", "x5", "x6")
+stds <-
+  c("Standard1",
+    "Standard2",
+    "Standard3",
+    "Standard4",
+    "Standard5",
+    "Standard6")
 
-grid <- tidyr::crossing(combs = combs, stds = stds) %>% 
+## for each standard and 
+grid <- tidyr::crossing(combs = combs, stds = stds) %>%
   mutate(iter = seq(1, nrow(.), by = 1))
 
-missing_data <- grid %>% 
-  rowwise(iter) %>% 
-  mutate(data = list(create_missing_data(combs, stds, data = mod_data))) %>% 
+missing_data <- grid %>%
+  rowwise(iter) %>%
+  mutate(data = list(create_missing_data(combs, stds, data = mod_data))) %>%
   unnest(cols = data)
 ```
 
@@ -169,7 +227,7 @@ missing_data <- grid %>%
 ```{r eval=FALSE}
 ## we export this out as well 
 write_csv(missing_data, here::here("data", "processed", 
-                                   "std-curve-replicate-analysis", "missing-sim-data.csv"))
+                                   "std-curve-replicate-analysis", "missing-sim-data_positive_net_mfi.csv"))
 ```
 
 
@@ -354,16 +412,19 @@ missing_result_df = pd.concat(result_df)
 
 
 ```{r}
-missing_recov <- py$missing_result_df %>% 
-  mutate(pct_recovery_missing = 100*(inferred_concentration)/standard_expected_concentration) %>% 
-  group_by(assay, batch, xponent_id, combs, stds) %>% 
-  summarise(pct_recovery_missing = mean(pct_recovery_missing)) %>% 
+## average recovery over all batches, assay, xponent_id and the standard that was deleted 
+missing_recov <- py$missing_result_df %>%
+  mutate(pct_recovery_missing = 100 * (inferred_concentration) / standard_expected_concentration) %>%
+  group_by(assay, combs, batch, xponent_id, stds) %>%
+  summarise(pct_recovery_missing = mean(pct_recovery_missing, na.rm = TRUE)) %>%
   ungroup()
 
-original_recov <- py$original_result_df %>% 
-  mutate(pct_recovery_original = 100*(inferred_concentration)/standard_expected_concentration) %>% 
-  group_by(assay, batch, xponent_id) %>% 
-  summarise(pct_recovery_original = mean(pct_recovery_original)) %>% 
+original_recov <- py$original_result_df %>%
+  mutate(
+    pct_recovery_original = 100 * (inferred_concentration) / standard_expected_concentration
+  ) %>%
+  group_by(assay, batch, xponent_id) %>%
+  summarise(pct_recovery_original = mean(pct_recovery_original, na.rm = TRUE)) %>%
   ungroup()
 ```
 
@@ -372,8 +433,9 @@ original_recov <- py$original_result_df %>%
 
 ```{r}
 comb_recov <- missing_recov %>% 
-  select(c(combs, stds, assay, batch, xponent_id, pct_recovery_missing)) %>% 
-  left_join(., original_recov, by = c("assay", "batch", "xponent_id"))
+  select(c(stds, combs, assay, batch, xponent_id, pct_recovery_missing)) %>% 
+  left_join(., original_recov, by = c("assay", "batch", "xponent_id")) %>% 
+  ungroup()
 ```
 
 ```{r}
@@ -452,13 +514,84 @@ natural_limits_V2 <- original_recov %>%
 
 natural_limits_V1
 natural_limits_V2
+
+natural_limits_V3 <- mod_data %>% 
+  group_by(assay, xponent_id, batch) %>% 
+  summarise(pct_recovery = mean(pct_recovery, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  filter(pct_recovery < 1000) %>% ## there are a few edge cases which we ignore  
+  group_by(xponent_id, assay) %>%
+  nest() %>% 
+  mutate(tol_df = map(data, ~ tolerance::normtol.int(.x$pct_recovery, 
+                                                     method = "EXACT", side = 2, m = 500, 
+                           log.norm = FALSE, P = 0.95))) %>% 
+  unnest(cols = tol_df) %>% 
+  janitor::clean_names() %>%
+  mutate(lower_diff = (x_bar - x2_sided_lower), 
+         upper_diff = (x2_sided_upper - x_bar)) %>% 
+  select(assay, xponent_id, lower_diff, upper_diff) %>% 
+  ungroup()
+
+natural_limits_V2
+natural_limits_V3
 ```
 
 
 
 **How does the missing replicate models compare against natural variation?** 
 
-```{r fig.height=10}
+We expect 95 % of the experiments we conducted with simulated data to be within the 95 % tolerance intervals.  
+
+```{r}
+comb_recov %>% 
+  mutate(diff = (pct_recovery_original - pct_recovery_missing)) %>% 
+  left_join(., natural_limits_V2, by = c("assay", "xponent_id")) %>% 
+  mutate(outside_interval = ifelse(abs(diff) > lower_diff, "out", "in")) %>% 
+  count(assay, xponent_id, stds, outside_interval) %>% 
+  group_by(assay, xponent_id, stds) %>%
+  mutate(freq = 100*(n / sum(n))) %>% 
+  mutate(perturbed = ifelse(stds == xponent_id, "perturbed_standard", 
+                            "not_perturbed"), 
+         panel = ifelse(assay %in% c("CEA", "TNC", "WFDC2"), "Panel_2", "Panel_1")) %>% 
+  ungroup() %>% 
+  filter(outside_interval == "out") %>% 
+  filter(panel == "Panel_1") %>% 
+  ggplot(.,aes(xponent_id, freq, color = perturbed)) + 
+  geom_point(size = 2) + 
+  facet_grid(rows = vars(assay), cols = vars(stds)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 6)) + 
+  scale_color_manual(values = c(freenome_colors[2], freenome_colors[3])) +
+  geom_hline(yintercept = 5, linetype="dotted") + 
+  labs(title = "% of time the recoveries from missing replicates outside tolerance limits", 
+       subtitle = "95 % Tolerance Limits can expect 5 % to be outside by chance")
+
+comb_recov %>% 
+  mutate(diff = (pct_recovery_original - pct_recovery_missing)) %>% 
+  left_join(., natural_limits_V2, by = c("assay", "xponent_id")) %>% 
+  mutate(outside_interval = ifelse(abs(diff) > lower_diff, "out", "in")) %>% 
+  count(assay, xponent_id, stds, outside_interval) %>% 
+  group_by(assay, xponent_id, stds) %>%
+  mutate(freq = 100*(n / sum(n))) %>% 
+  mutate(perturbed = ifelse(stds == xponent_id, "perturbed_standard", 
+                            "not_perturbed"), 
+         panel = ifelse(assay %in% c("CEA", "TNC", "WFDC2"), "Panel_2", "Panel_1")) %>% 
+  ungroup() %>% 
+  filter(outside_interval == "out") %>% 
+  filter(panel == "Panel_2") %>% 
+  ggplot(.,aes(xponent_id, freq, color = perturbed)) + 
+  geom_point(size = 2) + 
+  facet_grid(rows = vars(assay), cols = vars(stds)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 6)) + 
+  scale_color_manual(values = c(freenome_colors[2], freenome_colors[3])) +
+  geom_hline(yintercept = 5, linetype="dotted") + 
+  labs(title = "% of time the recoveries from missing replicates outside tolerance limits", 
+       subtitle = "95 % Tolerance Limits can expect 5 % to be outside by chance")
+```
+
+
+```{r}
 comb_recov %>% 
   mutate(diff = (pct_recovery_original - pct_recovery_missing)) %>% 
   filter(diff > -200) %>% 
@@ -473,8 +606,9 @@ comb_recov %>%
   geom_errorbar(aes(ymin = -lower_diff, ymax = upper_diff), color = freenome_colors[1]) + 
   facet_grid(rows = vars(assay), cols = vars(stds)) + 
   theme_bw() + 
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
-  scale_color_manual(values = c(freenome_colors[2], freenome_colors[3])) 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 6)) + 
+  scale_color_manual(values = c(freenome_colors[2], freenome_colors[3])) + 
+  labs(title = "Purple Bars are the 95 % Tolerance Limts")
 
 
 comb_recov %>% 
@@ -492,8 +626,9 @@ comb_recov %>%
                 alpha = 0.5) + 
   facet_grid(rows = vars(assay), cols = vars(stds)) + 
   theme_bw() + 
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
-  scale_color_manual(values = c(freenome_colors[2], freenome_colors[3])) 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 6)) + 
+  scale_color_manual(values = c(freenome_colors[2], freenome_colors[3])) + 
+  labs(title = "Purple Bars are the 95 % Tolerance Limts")
 ```
 
 
@@ -501,6 +636,108 @@ comb_recov %>%
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## R implementation 
+
+```{r}
+logistic_5pl <- function(d, a, mfi, c, b, g) {
+  return(d + (a-d)/(1 + (mfi/c)^b)^g)
+}
+
+fit_5pl <- function(df = NULL){
+  min_mfi <- df %>% pull(net_mfi) %>% min()
+  max_mfi <- df %>% pull(net_mfi) %>% max() 
+  exp_conc_protein <- df %>% pull(standard_expected_concentration) %>% median()
+  p0 = c(min_mfi, 1, exp_conc_protein, max_mfi, 1)
+  nls.multstart::nls_multstart(standard_expected_concentration ~ 
+                                          logistic_5pl(d, a, mfi = net_mfi, 
+                                                       c, b, g), 
+                                        data = df, 
+                                        iter = 10000, 
+                                        modelweights = 1/net_mfi,
+                                        start_lower = c(a = p0[1], b = p0[2], c = p0[3], d = p0[4], 
+                                                        g = p0[5]), 
+                                        start_upper = c(a = p0[1] + rnorm(1, 10, 1), b = p0[2] + + rnorm(1, 10, 1), 
+                                                        c = p0[3] + + rnorm(1, 10, 1), d = p0[4] + + rnorm(1, 10, 1), 
+                                                        g = p0[5] + + rnorm(1, 10, 1)), 
+                                        supp_errors = "Y", 
+                                        control = nls.control(maxiter = 10000, 
+                                                              minFactor=1e-7, 
+                                                              tol=1e-5, 
+                                                              printEval=F, 
+                                                              warnOnly=F))
+
+}
+weighted_5pl <- function(resp, d, a, net_mfi, c, b, g) {
+  resp <- d + (a-d)/(1 + (net_mfi/c)^b)^g
+}
+fit_nls <- function(df = NULL){
+  min_mfi <- df %>% pull(net_mfi) %>% min()
+  max_mfi <- df %>% pull(net_mfi) %>% max() 
+  exp_conc_protein <- df %>% pull(standard_expected_concentration) %>% median()
+  p0 = c(min_mfi, 1, exp_conc_protein, max_mfi, 1)
+  
+  nls(~ weighted_5pl(resp = standard_expected_concentration, d, a, net_mfi, c, b, g), 
+      weights = 1/net_mfi, 
+      start = list(a = p0[1], b = p0[2], c = p0[3], d = p0[4], 
+                                                        g = p0[5]), 
+      data = df)
+}
+```
+
+```{r}
+original_mods_r <- mod_data %>% 
+  group_by(batch, assay) %>% 
+  nest() %>% 
+  ungroup() %>% 
+  slice(1) %>% 
+  mutate(orig_model = map(data, ~ fit_5pl(df = .x))) 
+
+original_mods_r <- mod_data %>% 
+  group_by(batch, assay) %>% 
+  nest() %>% 
+  ungroup() %>% 
+  slice(1) %>% 
+  mutate(orig_model = map(data, ~ fit_nls(df = .x))) 
+
+```
+
+
+**fit original mod** 
+```{r}
+original_mods_r <- mod_data %>% 
+  group_by(batch, assay) %>% 
+  nest() %>% 
+  ungroup() %>% 
+  mutate(orig_model = map(data, ~ fit_5pl(df = .x))) 
+
+original_recov_r <- original_mods_r %>%
+  ungroup() %>%
+  mutate(pred_frame = map2(orig_model, data, ~ augment(x = .x, newdata = .y))) %>%
+  select(-c(data, orig_model)) %>%
+  unnest(cols = pred_frame) %>%
+  mutate(pct_recovery_r = 100 * .fitted / standard_expected_concentration) %>% 
+  select(assay, batch, xponent_id, pct_recovery_r) %>% 
+  group_by(assay, batch, xponent_id) %>% 
+  summarise(pct_recovery_original = mean(pct_recovery_r)) %>% 
+  ungroup()
+```
 
 
 
