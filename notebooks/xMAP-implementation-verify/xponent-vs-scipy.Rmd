@@ -1,0 +1,347 @@
+---
+title: "xponent_vs_scipy"
+author: "Dilsher Singh Dhillon"
+date: "`r format(Sys.time(),'%d %B,%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float : true 
+---
+<style>
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+    background-color: #948DFF;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r}
+library(reticulate)
+library(tidyverse)
+library(plotly)
+freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
+                   '#FECDD1')
+```
+
+```{r}
+Sys.which("python")
+
+reticulate::use_python(python = "/home/ddhillon/.virtualenvs/pate/bin/python")
+```
+
+
+
+```{python}
+import numpy as np
+import pandas as pd
+
+from scipy.optimize.minpack import curve_fit
+from scipy.optimize import leastsq
+from joblib import Parallel, delayed
+```
+
+
+
+```{python}
+def curve_fit_coeffs(
+    exp_conc_protein: pd.Series, net_mfi_protein: pd.Series) -> np.ndarray:
+    """Find a curve fit using the standard concentrations and MFIs from the panel xPonent file.
+    Args:
+        exp_conc_protein: expected concentrations of the standards
+        net_mfi_protein: net MFIs of the standards
+    Returns: numpy array of the curve fit coefficients
+    """
+    min_mfi = net_mfi_protein.min()
+    max_mfi = net_mfi_protein.max()
+    p0 = [min_mfi, 1, exp_conc_protein.median(), max_mfi, 1]
+    xdata = list(exp_conc_protein)
+    ydata = list(net_mfi_protein)
+    coeffs, _ = curve_fit(
+        f=logistic5p,
+        xdata=xdata,
+        ydata=ydata,
+        p0=p0,
+        sigma=ydata,
+        method="lm",
+        maxfev=int(1e5),
+        absolute_sigma=True,
+    )
+    return coeffs
+```
+
+```{python}
+def logistic5p(x: float, A: float, B: float, C: float, D: float, F: float) -> float:
+    """5-parameter logistic equation"""
+    return D + (A - D) / ((1 + (x / C) ** B) ** F)
+```
+
+
+```{python}
+def inv_logistic5p(y: float, A: float, B: float, C: float, D: float, F: float) -> float:
+    """Inverse of the 5-parameter logistic equation"""
+    return C * (((((A - D) / (y - D)) ** (1.0 / F)) - 1.0) ** (1.0 / B))
+```
+
+```{python}
+def parallel_runner(sub_df):
+    sub_df = sub_df.loc[~sub_df.isna()["net_mfi"].values]
+    #indexNames = sub_df[ sub_df['net_mfi'] < 0 ].index
+    #sub_df.drop(indexNames , inplace=True)
+    estimated_coefficients = curve_fit_coeffs(sub_df["standard_expected_concentration"], sub_df["net_mfi"])
+    inferred_concentrations = np.array([inv_logistic5p(net_mfi, *estimated_coefficients) for net_mfi in sub_df["net_mfi"]])
+    sub_df["inferred_concentration"] = inferred_concentrations
+    return sub_df
+```
+
+
+
+```{python}
+n_cpu = 8
+PARALLEL = True
+```
+
+
+```{r}
+
+```
+
+
+```{python}
+missing_df = pd.read_csv('/home/ddhillon/projects/beta-av-testing/data/processed/std-curve-replicate-analysis/missing-sim-data.csv')
+original_df = pd.read_csv('/home/ddhillon/projects/beta-av-testing/data/processed/std-curve-replicate-analysis/original_mod_data.csv')
+```
+
+
+Fit models to original data   
+
+```{python}
+if PARALLEL:
+    result_df = Parallel(n_cpu)(delayed(parallel_runner)(sub_df) for _, sub_df in original_df.groupby(["batch", "assay"]))
+else:
+    result_dfs = []
+    for i, (_, sub_df) in enumerate(original_df.groupby(["batch", "assay"])):
+        result_df = parallel_runner(sub_df)
+        result_dfs.append(result_df)
+
+original_result_df = pd.concat(result_df)
+```
+
+
+
+## Recovery Comparisons 
+
+### Overall
+
+```{r warning=FALSE, message=FALSE}
+py$original_result_df %>% 
+  mutate(pct_recovery_scipy = 100*(inferred_concentration)/standard_expected_concentration) %>% 
+  ggplot(.,aes(xponent_id, pct_recovery)) + 
+  geom_boxplot() + 
+  theme_bw() + 
+  facet_grid(cols = vars(assay)) + 
+  geom_hline(yintercept = 100, color = freenome_colors[1]) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(title = "xPonent Recoveries")
+
+py$original_result_df %>% 
+  mutate(pct_recovery_scipy = 100*(inferred_concentration)/standard_expected_concentration) %>% 
+  ggplot(.,aes(xponent_id, pct_recovery_scipy)) + 
+  geom_boxplot() + 
+  theme_bw() + 
+  facet_grid(cols = vars(assay)) + 
+  geom_hline(yintercept = 100, color = freenome_colors[1]) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(title = "PATE Recoveries")
+```
+
+### Per Standard
+
+```{r warning=FALSE, message=FALSE}
+plotly_plot <- function(standard = "1", df = NULL) {
+  p <- df %>% 
+  mutate(pct_recovery_scipy = 100*(inferred_concentration)/standard_expected_concentration) %>% 
+  filter(xponent_id == paste0("Standard", standard)) %>% 
+  ggplot(.,aes(pct_recovery, pct_recovery_scipy, experiment = batch)) +
+  geom_point() + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() + labs(title = paste0("Standard", standard))
+  
+  return(ggplotly(p))
+  
+
+}
+
+std_vector <- c("1", "2", "3", "4", "5", "6") 
+
+plots <- map(std_vector, ~ plotly_plot(standard = .x, d = py$original_result_df))
+htmltools::tagList(plots)
+```
+
+
+
+```{r eval=FALSE}
+py$original_result_df %>% 
+  filter(batch == "20220120_ShakeSpd_1200rpm_Panel2_Plate2_20220121") %>% 
+  filter(assay == "CEA") %>%
+   mutate(pct_recovery_scipy = 100*(inferred_concentration)/standard_expected_concentration) %>% 
+  write_csv(here::here("data", "processed", "std-curve-replicate-analysis" ,"for_jmp", "cea-shake-speed-exp.csv")) 
+
+py$original_result_df %>% 
+  filter(batch == "20220120_ShakeSpd_1200rpm_Panel2_Plate2_20220121") %>% 
+  filter(assay == "WFDC2") %>% 
+  mutate(pct_recovery_scipy = 100*(inferred_concentration)/standard_expected_concentration) %>% 
+  
+  write_csv(here::here("data", "processed", "std-curve-replicate-analysis" ,"for_jmp", "wfdc2-exp.csv"))
+
+py$original_result_df %>% 
+  mutate(pct_recovery_scipy = 100*(inferred_concentration)/standard_expected_concentration) %>% 
+  rename(pct_recovery_xponent = pct_recovery) %>% 
+  write_csv(here::here("data", "processed", "std-curve-replicate-analysis" ,"for_jmp", "xponent-vs-scipy.csv"))
+```
+
+
+## Troubleshoot 
+
+There is one experiment that always seems to be different from the general trend 
+`20220120_ShakeSpd_1200rpm_Panel2_Plate2_20220121` 
+
+*Remove this and then plot the figures* 
+
+```{r}
+reduced_df <- py$original_result_df %>% 
+  filter(batch != "20220120_ShakeSpd_1200rpm_Panel2_Plate2_20220121") %>% 
+  filter(batch != "20220120_ShakeSpd_1200rpm_Panel1_Plate2_20220121")
+
+plots <- map(std_vector, ~ plotly_plot(standard = .x, df = reduced_df))
+htmltools::tagList(plots)
+```
+
+
+**Inspect this experiment data** 
+
+```{r}
+bad_exp <- py$original_result_df %>% 
+  filter(batch == "20220120_ShakeSpd_1200rpm_Panel2_Plate2_20220121") 
+
+bad_exp %>% 
+  skimr::skim()
+bad_exp %>% 
+  filter(assay == "CEA")
+```
+
+
+### Fit Model over average of Quads 
+
+Instead of using all the replicates, we instead fit the model on the average of quads 
+
+
+
+## Chi square fit  
+
+```{r}
+result_df_r <- py$original_result_df
+# 
+# tmp <- result_df_r %>% 
+#   count(batch, assay)
+# 
+# tmp_df <- result_df_r %>% 
+#   left_join(., tmp, by = c("assay", "batch")) %>% 
+#   mutate(params = 6) %>% 
+#   filter(batch == "20220120_ShakeSpd_1200rpm_Panel2_Plate2_20220121") %>% 
+#   filter(assay == "CEA")
+# 
+# rsse <- tmp_df %>% 
+#   group_by(xponent_id) %>% 
+#   mutate(avg_inferred = mean(inferred_concentration)) %>% 
+#   distinct(avg_inferred, .keep_all = TRUE) %>% 
+#   mutate(rsse = (standard_expected_concentration - avg_inferred)/net_mfi) %>% 
+#   mutate(rsse = rsse^2) %>% 
+#   ungroup() %>% 
+#   pull(rsse) %>% 
+#   sum()
+# 
+# obs <- tmp_df %>% 
+#    distinct(n) %>% 
+#    pull()
+# obs_df <- obs - 6
+# 
+# pchisq(rsse, df = obs_df, lower.tail = FALSE)
+# 
+# pchisq(rsse, df = 18)
+
+
+
+```
+
+
+We define two functions that will calculate the RSSE and the associated DF as a vector. This way, we can run this function on each batch and assay.  
+
+```{r}
+calc_rsse <- function(df) {
+  df %>%
+    group_by(xponent_id) %>%
+    mutate(avg_inferred = mean(inferred_concentration, na.rm = TRUE)) %>%
+    distinct(avg_inferred, .keep_all = TRUE) %>%
+    mutate(rsse = (standard_expected_concentration - avg_inferred) / net_mfi) %>%
+    mutate(rsse = rsse ^ 2) %>%
+    ungroup() %>%
+    pull(rsse) %>%
+    sum() 
+}
+calc_df <- function(df){
+  distinct(n_df) %>% 
+    pull()
+}
+```
+
+
+```{r}
+params <- 6
+obs <- result_df_r %>%
+  count(batch, assay)
+
+result_df_r <- result_df_r %>%
+  left_join(., obs, by = c("assay", "batch")) %>% 
+  rename(n_df = n)
+
+result_df_r %>% 
+  filter(is.na(pct_recovery))
+```
+
+
+```{r}
+gof_df <- result_df_r %>% 
+  group_by(assay, batch) %>% 
+  nest() %>% 
+  mutate(rsse = map(data, ~ calc_rsse(.x))) %>% 
+  ungroup() %>% 
+  unnest(cols = c(data, rsse)) %>% 
+  #ungroup() %>%
+  mutate(n_df = n_df - params) %>% 
+  mutate(p_val = pchisq(rsse, n_df, lower.tail = FALSE))
+```
+
+```{r}
+p <- gof_df %>% 
+  ggplot(.,aes(batch , p_val)) + 
+  geom_point() + 
+  facet_grid(cols = vars(assay))
+plotly::ggplotly(p)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
