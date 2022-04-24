@@ -1,0 +1,1043 @@
+---
+title: "Gamma Lot QC"
+author: "Dilsher Singh Dhillon"
+date: "`r format(Sys.time(),'%d %B,%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float : true 
+---
+<style>
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+    background-color: #948DFF;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = TRUE)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+## Here are the libraries to install  
+library(tidyverse)  
+library(janitor)  
+library(here)
+library(googleCloudStorageR)
+freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
+                   '#FECDD1')
+library(reticulate)
+```
+
+```{r}
+## this gets us the needed authorization to speak with google drive 
+googleAuthR::gar_gce_auth()
+```
+
+## Introduction 
+
+
+This experiment is different from the `exp-01.rmd` which was just a one off experiment to make sure things look good. In this experiment, 6 different gamma lot reagents were sampled from the gamma shipment and then run. 
+
+[benchling](https://freenome.benchling.com/freenome/f/lib_WUAAbbjQ-08-rds-gamma-lot/etr_xsKPRMSj-jnwz-protein-gamma-lot-qc-and-gamma-lot-standards-value-assignment-batch-1-and-batch-2/edit?m=slm-0Lf5hKcksWqPokB2OzRp)
+
+[conluence doc](https://freenome.atlassian.net/wiki/spaces/CBAD/pages/2262728705/Gamma+Lot+QC+Value+Assignment)
+
+
+There are 3 types of standards in the plate 
+1. Gamma lot standards 
+2. Beta lot standards  
+3. Platinum standards 
+
+**Platinum standards** 
+
+Each panel has two sets of platinum standards. Here is how each set is divided  
+
+# Panel 1 - 
+## Platinum Set 1 --> CXCL8, FLT3L, MUC16, IL1R2 , AFP, CCL20, PSA, MUC16, HGF, EGF, and IL-6
+
+## Platinum Set 2 --> OPN and MUC1
+
+# Panel 2 - 
+## Platinum Set 1 --> CEA, THBS-2, c-MET, uPAR, MIF, IL-6R, and HE4 
+
+## Platinum Set 2 --> TNC 
+
+
+
+
+Import data from `pate` using these commands  
+
+```
+pate-rnd xmap-collector --include_file_str GammaLot_QC \--out_file_name gamma_lot_qc.csv
+
+```
+
+
+```{r}
+gcs_get_object("gs://inhouse-xmap-data/user_data_frames/gamma_lot_qc.csv", 
+               saveToDisk=here::here("data", "raw", "gamma_lot_qc.csv"), 
+               overwrite = TRUE)
+```
+
+
+```{r}
+# import data locally 
+gamma_lot <- readr::read_csv(here::here("data", "raw", "gamma_lot_qc.csv"), 
+                             show_col_types = FALSE) %>% 
+  filter(assay %in% c("CEACAM5", "FLT3LG", "CXCL8", "IL1R2", "MUC16", "TNC", 
+                      "WFDC2")) %>% 
+  mutate(panel = ifelse(assay == "CEACAM5" | assay == "TNC" | assay == "WFDC2", 
+                        "panel_2", "panel_1"))
+```
+
+
+**why are there 3 plate 1 for panel 2?**  
+
+confirmed with Jinesh on which data set to use (`20220317_GammaLot_QC_Panel2_Plate1_20220318_143348.csv`) 
+
+```{r}
+gamma_lot %>% 
+  filter(grepl("Plate1", file_name)) %>% 
+  count(file_name)
+```
+
+
+
+
+Seems like `20220317_GammaLot_QC_Panel2_Plate1_20220318_133136.csv` has some missing bead counts - on checking with Jinesh and wilson, they suggest not using this and using the latest run of these 3. 
+
+```{r}
+gamma_lot %>% 
+  filter(file_name == "20220317_GammaLot_QC_Panel2_Plate1_20220318_133136.csv") %>% 
+  filter(is.na(bead_count))
+```
+
+
+
+
+
+```{r}
+cleaner_data <- gamma_lot %>% 
+  filter(file_name != "20220317_GammaLot_QC_Panel2_Plate1_20220318_133136.csv") %>% 
+  filter(file_name != "20220317_GammaLot_QC_Panel2_Plate1_20220318_141840.csv") 
+```
+
+
+
+
+
+
+
+Which samples failed bead count? 
+*several bead count failures for standard 6 in the platinum set - but none of these contain the standards of interest*   
+
+
+```{r}
+cleaner_data %>% 
+  mutate(bead_fail = ifelse(bead_count < 35, "yes", "no")) %>% 
+  filter(grepl("Panel1", file_name)) %>% 
+  ggplot(.,aes(well_row, well_column)) + 
+  geom_tile(aes(fill = bead_fail)) + 
+  facet_grid(cols = vars(assay), rows = vars(file_name)) 
+
+cleaner_data %>% 
+  mutate(bead_fail = ifelse(bead_count < 35, "yes", "no")) %>% 
+  filter(grepl("Panel2", file_name)) %>% 
+  ggplot(.,aes(well_row, well_column)) + 
+  geom_tile(aes(fill = bead_fail)) + 
+  facet_grid(cols = vars(assay), rows = vars(file_name)) 
+
+```
+
+
+1.  Remove the wells with bead counts < 35 and create a 'clean' data set and output 
+2.  Don't use the plate 6 for panel 1 
+
+```{r}
+clean_data <- cleaner_data %>% 
+  filter(bead_count > 35) %>% 
+  filter(!(grepl("Panel1_Plate6", file_name)))
+
+clean_data %>% 
+  filter(sample_type == "standard") %>%
+  write_csv(here::here("data", "processed", "gamma-lot-qc", 
+                       "gamma_standards_data_for_curve.csv"))
+
+clean_data %>% 
+  write_csv(here::here("data", "processed", "gamma-lot-qc", 
+                       "gamma_lot_qc_data_for_infer.csv")) 
+
+clean_data %>% 
+  group_by(file_name, assay, xponent_id) %>% 
+  mutate(net_mfi = mean(net_mfi)) %>% 
+  distinct(net_mfi, .keep_all = TRUE) %>% 
+  write_csv(here::here("data", "processed", "gamma-lot-qc", 
+                       "gamma_lot_qc_data_for_infer-averaged.csv"))
+```
+
+
+
+
+## Part 1 
+
+For the curves fit using gamma lot, we will check the interpolated beta and platinum standard distribution 
+
+### Outlier test on the results of the 6 lots 
+
+Since we have one observation of each beta and platinum standard per lot, we can't run any statistical test of comparisons. Instead, we want to check if something is wildly different among the 6 lots. 
+
+We can achieve this by using the modified z-score outlier test on these 4 observations to detect if something is 'different'. 
+
+```{r}
+mod_z_calc <- function(x_vec) {
+  x_vec_median <- median(x_vec, na.rm = TRUE) 
+  x_vec_mad <- median(abs(x_vec - x_vec_median))
+  
+  mod_z <- 0.6745*(x_vec - x_vec_median)/x_vec_mad
+  return(mod_z)
+  
+}
+```
+
+**Beta and platinum standards**  
+
+Here we fit the curve using the gamma standards, and then interpolate the beta and platinum standards. We know that these standards are the same sample, simply run with a different lot of gamma reagents and standards.  
+
+Their distribution should be within the natural variation range. But since we don't have any data on these gamma lot reagents, we don't know how to estimate this natural variation.  
+
+Instead, another way to check if they are 'similar' is using the `modified z score`. This is used as an outlier test and from the reagent lots sampled, neither of these should be 
+
+**Beta Standards** 
+```{r}
+clean_data %>% 
+  filter(sample_type == "sample") %>% 
+  filter(xponent_id != "Assay Buffer") %>% 
+  filter(xponent_id != "Background0") %>% 
+  filter(grepl("Beta Std", xponent_id)) %>% 
+  group_by(xponent_id, file_name, assay) %>% 
+  summarise(calc_conc = mean(calc_conc)) %>% ## average over the replicates within each batch  
+  ungroup() %>% 
+  group_by(xponent_id, assay) %>% 
+  mutate(mod_z = mod_z_calc(calc_conc)) %>% 
+  ungroup() %>% 
+  ggplot(.,aes(reorder(xponent_id, mod_z), mod_z, group = assay)) + 
+  geom_point() + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() + 
+  geom_hline(yintercept = c(3.5, -3.5)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(title = "Modified Z-score", 
+       subtitle = ">3.5 is classified as outlier")
+```
+
+**Platinum Standards Set 1**  
+```{r}
+clean_data %>% 
+  filter(sample_type == "sample") %>% 
+  filter(xponent_id != "Assay Buffer") %>% 
+  filter(xponent_id != "Background0") %>% 
+  filter(grepl("PltSet1", xponent_id)) %>% 
+  filter(assay %in% c("CEACAM5", "CXCL8", "FLT3LG", "MUC16", "WFDC2", "IL1R2")) %>% 
+  group_by(xponent_id, file_name, assay) %>% 
+  summarise(calc_conc = mean(calc_conc)) %>% ## average over the replicates within each batch  
+  ungroup() %>% 
+  group_by(xponent_id, assay) %>% 
+  mutate(mod_z = mod_z_calc(calc_conc)) %>% 
+  ungroup() %>% 
+  ggplot(.,aes(reorder(xponent_id, mod_z), mod_z, group = assay)) + 
+  geom_point() + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() + 
+  geom_hline(yintercept = c(3.5, -3.5)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(title = "Modified Z-score", 
+       subtitle = ">3.5 is classified as outlier")
+
+```
+
+CEA, std 5? 
+
+```{r}
+clean_data %>% 
+  filter(sample_type == "sample") %>% 
+  filter(xponent_id != "Assay Buffer") %>% 
+  filter(xponent_id != "Background0") %>% 
+  filter(grepl("PltSet1", xponent_id)) %>% 
+  filter(assay %in% c("CEACAM5")) %>% 
+  filter(xponent_id == "PltSet1 Std5") %>% 
+  group_by(xponent_id, file_name, assay) %>% 
+  summarise(calc_conc = mean(calc_conc), 
+            net_mfi = mean(net_mfi), 
+            computer_name = computer_name, 
+            mean_bead_count = mean(bead_count)) %>% 
+  distinct(computer_name, .keep_all = TRUE) %>% 
+  ungroup()
+```
+
+
+
+
+
+
+**Platinum Standards Set 2**  
+```{r}
+p <- clean_data %>% 
+  filter(sample_type == "sample") %>% 
+  filter(xponent_id != "Assay Buffer") %>% 
+  filter(xponent_id != "Background0") %>% 
+  filter(grepl("PltSet2", xponent_id)) %>% 
+  filter(assay %in% c("TNC")) %>% 
+  group_by(xponent_id, file_name, assay) %>% 
+  summarise(calc_conc = mean(calc_conc)) %>% ## average over the replictes within each batch  
+  ungroup() %>% 
+  group_by(xponent_id, assay) %>% 
+  mutate(mod_z = mod_z_calc(calc_conc)) %>% 
+  ungroup() %>% 
+  ggplot(.,aes(reorder(xponent_id, mod_z), mod_z, group = assay, file_name = file_name)) + 
+  geom_point() + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() + 
+  geom_hline(yintercept = c(3.5, -3.5)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(title = "Modified Z-score", 
+       subtitle = ">3.5 is classified as outlier")
+plotly::ggplotly(p)
+```
+
+What's going on for TNC std 6? (*plate 3 and plate 5 seem very different*)  
+
+```{r}
+clean_data %>% 
+  filter(sample_type == "sample") %>% 
+  filter(xponent_id != "Assay Buffer") %>% 
+  filter(xponent_id != "Background0") %>% 
+  filter(grepl("PltSet2", xponent_id)) %>% 
+  filter(assay %in% c("TNC")) %>% 
+  filter(xponent_id == "PltSet2 Std6") %>% 
+  group_by(xponent_id, file_name, assay) %>% 
+  summarise(calc_conc = mean(calc_conc), 
+            net_mfi = mean(net_mfi), 
+            computer_name = computer_name, 
+            mean_bead_count = mean(bead_count)) %>% 
+  distinct(computer_name, .keep_all = TRUE) %>% 
+  ungroup()
+```
+
+### Between run CVs 
+
+**Platinum Standards Set 1 and 2**  
+```{r}
+clean_data %>% 
+  filter(sample_type == "sample") %>% 
+  filter(xponent_id != "Assay Buffer") %>% 
+  filter(xponent_id != "Background0") %>% 
+  filter(grepl("PltSet1", xponent_id)) %>% 
+  filter(assay %in% c("CEACAM5", "CXCL8", "FLT3LG", "MUC16", "WFDC2", "IL1R2"))  %>% 
+  group_by(file_name, assay, xponent_id) %>% 
+  summarise(calc_conc = mean(calc_conc)) %>% 
+  ungroup() %>% 
+  group_by(assay, xponent_id) %>% 
+  summarise(cv = 100*sd(calc_conc)/mean(calc_conc)) %>% 
+  ggplot(.,aes(xponent_id, cv)) + 
+  geom_point() + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(title = "CV across 6 runs of the gamma lots")
+
+clean_data %>% 
+  filter(sample_type == "sample") %>% 
+  filter(xponent_id != "Assay Buffer") %>% 
+  filter(xponent_id != "Background0") %>% 
+  filter(grepl("PltSet2", xponent_id)) %>% 
+  filter(assay %in% c("TNC")) %>% 
+  group_by(file_name, assay, xponent_id) %>% 
+  summarise(calc_conc = mean(calc_conc)) %>% 
+  ungroup() %>% 
+  group_by(assay, xponent_id) %>% 
+  summarise(cv = 100*sd(calc_conc)/mean(calc_conc)) %>% 
+  ggplot(.,aes(xponent_id, cv)) + 
+  geom_point() + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(title = "CV across 6 runs of the gamma lots")
+```
+
+
+
+Generally speaking, CVs are higher for Std 6 and Std1 for a lot of the markers, so it isn't surprising to see some outliers in the platinum standards for S6 and S1. 
+If there were true differences in one of the lots, we would have seen this consistently. 
+
+
+
+
+**samples** 
+
+```{r include=FALSE, eval=FALSE}
+options(scipen = 100, digits = 4)
+
+ p <- clean_data %>% 
+  filter(sample_type == "sample") %>% 
+  filter(xponent_id != "Assay Buffer") %>% 
+  filter(xponent_id != "Background0") %>% 
+  filter(!grepl("Std", xponent_id)) %>% 
+  group_by(xponent_id, file_name, assay) %>% 
+  summarise(calc_conc = mean(calc_conc), median_mfi = mean(median_mfi)) %>% ## average over the replicates within each batch  
+  ungroup() %>% 
+  group_by(xponent_id, assay) %>% 
+  mutate(mod_z = mod_z_calc(calc_conc)) %>% 
+  filter(mod_z < 70) %>% 
+  ungroup() %>% 
+  ggplot(.,aes(reorder(xponent_id, mod_z), mod_z, group = assay, mfi = median_mfi, 
+               calc_conc = calc_conc)) + 
+  geom_point() + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() + 
+  geom_hline(yintercept = c(3.5, -3.5)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 0.1)) + 
+  labs(title = "Modified Z-score", 
+       subtitle = ">3.5 is classified as outlier") 
+
+plotly::ggplotly(p)
+```
+
+```{r eval=FALSE}
+clean_data %>% 
+  filter(sample_type == "standard") %>% 
+  group_by(assay, file_name, xponent_id) %>% 
+  filter(assay == "FLT3LG") %>% 
+  mutate(net_mfi = mean(net_mfi)) %>% 
+  distinct(net_mfi, .keep_all = TRUE) %>% 
+  ggplot(.,aes(log10(standard_expected_concentration), log10(net_mfi))) + 
+  geom_point(aes(color = file_name)) + 
+  #geom_smooth(aes(color = file_name)) + 
+  #facet_grid(rows = vars(assay)) + 
+  theme_bw()
+```
+
+
+
+
+
+
+## Part 2 
+
+In order for us to value assign the gamma lot standards against our platinum standards, we will 
+
+1. Fit a curve using the platinum standards for each of the 6 runs 
+
+2. Interpolate the gamma lot standards to the curve fit by platinum standards 
+
+3. Take the average across all 6 runs and assign that as the value of each gamma lot standard 
+
+
+
+
+### Create Platinum Standard Data   
+
+We need to send the value assignments to RDS for ALL 20 proteins, not just the 7 markers because RDS is not aware that we are only going forward with the 20.  
+
+```{r}
+# Panel 1 - 
+## Platinum Set 1 --> CXCL8, FLT3L, MUC16, IL1R2 , AFP, CCL20, PSA, MUC16, HGF, EGF, and IL-6
+
+## Platinum Set 2 --> OPN and MUC1
+
+# Panel 2 - 
+## Platinum Set 1 --> CEA, THBS-2, c-MET, uPAR, MIF, IL-6R, and HE4 
+
+## Platinum Set 2 --> TNC 
+
+raw_platinum <-
+  readr::read_csv(here::here("data", "raw", "gamma_lot_qc.csv"),
+                  show_col_types = FALSE) %>%
+  mutate(
+    panel = ifelse(
+      assay == "CEACAM5" |
+        assay == "TNC" | assay == "WFDC2" | assay == "THBS2"
+      |
+        assay == "THBS2" |
+        assay == "IL-6Rɑ" | assay == "c-MET" | assay == "uPAR",
+      "panel_2",
+      "panel_1"
+    )
+  ) %>%
+  filter(file_name != "20220317_GammaLot_QC_Panel2_Plate1_20220318_133136.csv") %>%
+  filter(file_name != "20220317_GammaLot_QC_Panel2_Plate1_20220318_141840.csv") %>% 
+  mutate(assay = ifelse(assay == "PSA", "KLK3", assay)) %>% 
+  filter(!(grepl("Panel1_Plate6", file_name)))
+
+```  
+
+
+```{r eval=FALSE, include=FALSE}
+#This summary below just cross checks what we 
+raw_platinum %>% 
+  mutate(bead_fail = ifelse(bead_count < 35, 1, 0)) %>% 
+  filter(grepl("Panel1", file_name)) %>% 
+  ggplot(.,aes(well_row, well_column)) + 
+  geom_tile(aes(fill = bead_fail)) + 
+  facet_grid(cols = vars(assay), rows = vars(file_name)) 
+
+raw_platinum %>% 
+  mutate(bead_fail = ifelse(bead_count < 35, 1, 0)) %>% 
+  filter(grepl("Panel2", file_name)) %>% 
+  ggplot(.,aes(well_row, well_column)) + 
+  geom_tile(aes(fill = bead_fail)) + 
+  facet_grid(cols = vars(assay), rows = vars(file_name))
+```
+
+
+
+
+### Value assignment of platinum standards   
+
+[This](https://docs.google.com/presentation/d/1pte5YGIPcFFPNIaL89gx_vG7sJ9gaScpnNt4j6fkSLE/edit?pli=1#slide=id.g10568549cae_1_28) deck provides with the value assignments 
+
+```{r}
+value_assignments <- raw_platinum %>% 
+  count(assay) %>% 
+  mutate(plt_set = case_when(assay == "CXCL8" ~ "PltSet1", 
+                             assay == "FLT3LG" ~ "PltSet1", 
+                             assay == "MUC16" ~ "PltSet1", 
+                             assay == "IL1R2" ~ "PltSet1", 
+                             assay == "AFP" ~ "PltSet1", 
+                             assay == "CCL20" ~ "PltSet1", 
+                             assay == "KLK3" ~ "PltSet1", 
+                             assay == "HGF" ~ "PltSet1", 
+                             assay == "EGF" ~ "PltSet1", 
+                             assay == "IL6" ~ "PltSet1", 
+                             assay == "CEACAM5" ~ "PltSet1", 
+                             assay == "THBS2" ~ "PltSet1", 
+                             assay == "cMET" ~ "PltSet1", 
+                             assay == "uPAR" ~ "PltSet1", 
+                             assay == "MIF" ~ "PltSet1", 
+                             assay == "IL6R" ~ "PltSet1", 
+                             assay == "WFDC2" ~ "PltSet1", 
+                             assay == "OPN" ~ "PltSet2", 
+                             assay == "TNC" ~ "PltSet2", 
+                             assay == "MUC1" ~ "PltSet2")) %>% 
+  mutate(standard_expected_concentration = c(37004.3, 6046.1, 2.59, 80237.3, 
+                                             3339045, 4.75, 32.3, 383.6, 35638.7, 
+                                             39137.7, 18669.5, 185822, 357998.8, 
+                                             33.1, 17884.2, 264361.9, 139892.2, 
+                                             12993.4, 38956.6, 55715.1), 
+         units = c("pg/ml", "pg/ml", "IU/ml", "pg/ml", "pg/ml", "IU/ml", "IU/ml", 
+                   "IU/ml", "pg/ml", "pg/ml", "pg/ml", "IU/ml", "pg/ml", "U/ml", 
+                   "U/ml", "pg/ml", "pg/ml", "pg/ml", "pg/ml", "pg/ml")) %>% 
+  select(-n)
+```
+
+
+
+
+```{r}
+# Panel 1 - 
+## Platinum Set 1 --> CXCL8, FLT3L, MUC16, IL1R2 , AFP, CCL20, PSA, MUC16, HGF, EGF, and IL-6
+
+## Platinum Set 2 --> OPN and MUC1
+
+# Panel 2 - 
+## Platinum Set 1 --> CEA, THBS-2, c-MET, uPAR, MIF, IL-6R, and HE4 
+
+## Platinum Set 2 --> TNC 
+
+plt_std_data <- raw_platinum %>%
+  filter(grepl("Plt", xponent_id)) %>%
+  select(-standard_expected_concentration) %>% 
+  #select(xponent_id, assay, median_mfi, net_mfi, file_name, well_id) %>%
+  left_join(., value_assignments, by = c("assay")) %>%
+  filter(!(assay == "MUC1" & grepl("PltSet1", xponent_id))) %>%
+  filter(!(assay == "OPN" & grepl("PltSet1", xponent_id))) %>%
+  filter(!(assay == "TNC" & grepl("PltSet1", xponent_id))) %>%
+  filter(!(assay == "AFP" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "CCL20" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "CEACAM5" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "cMET" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "CXCL8" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "EGF" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "FLT3LG" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "HGF" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "IL1R2" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "IL6" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "IL6R" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "KLK3" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "MIF" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "MUC16" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "THBS2" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "uPAR" & grepl("PltSet2", xponent_id))) %>%
+  filter(!(assay == "WFDC2" & grepl("PltSet2", xponent_id))) %>%
+  mutate(
+    standard_expected_concentration = case_when(
+      grepl("Std2", xponent_id) ~ standard_expected_concentration / 4,
+      grepl("Std3", xponent_id) ~ standard_expected_concentration /
+        16,
+      grepl("Std4", xponent_id) ~ standard_expected_concentration /
+        64,
+      grepl("Std5", xponent_id) ~ standard_expected_concentration /
+        256,
+      grepl("Std6", xponent_id) ~ standard_expected_concentration /
+        1024, 
+      is_double(standard_expected_concentration) ~ standard_expected_concentration
+    )) %>% 
+  mutate(sample_type = ifelse(grepl("Plt", xponent_id), "standard", "sample")) 
+```
+
+
+### Create a dataframe for fitting the curve 
+
+Now we have the data we need to fit a curve using the platinum standards. The next thing we need is the gamma lot standards data which we will "infer" on 
+
+```{r}
+data_to_infer <- raw_platinum %>% 
+  filter(!(grepl("Plt", xponent_id))) %>% 
+  mutate(sample_type = "sample") 
+```
+
+```{r}
+curve_fit_data <- plt_std_data %>% 
+  bind_rows(data_to_infer) %>% 
+  filter(bead_count >= 35)
+```
+
+```{r}
+curve_fit_data %>% 
+  filter(grepl("Plt", xponent_id)) %>% 
+  count(xponent_id, file_name, assay)
+```
+
+
+
+```{r}
+curve_fit_data %>% 
+  select(assay, xponent_id, net_mfi, sample_type, standard_expected_concentration, units, bead_count, 
+         file_name) %>% 
+  write_csv(., here::here("data", "processed", "gamma-lot-qc", 
+                       "platinum_standards_data_for_curve.csv")) 
+```
+
+
+
+
+
+## Scipy Functions 
+
+
+```{python}
+import numpy as np
+import pandas as pd
+
+from scipy.optimize.minpack import curve_fit
+from scipy.optimize import leastsq
+from joblib import Parallel, delayed
+```
+
+```{python}
+plt_fit_data = pd.read_csv('/home/ddhillon/projects/beta-av-testing/data/processed/gamma-lot-qc/platinum_standards_data_for_curve.csv')
+#infer_data = pd.read_csv('/home/ddhillon/projects/beta-av-testing/data/processed/gamma-lot-qc/gamma_lot_qc_data_for_infer.csv')
+```
+
+
+```{python}
+def curve_fit_coeffs(
+    exp_conc_protein: pd.Series, net_mfi_protein: pd.Series) -> np.ndarray:
+    """Find a curve fit using the standard concentrations and MFIs from the panel xPonent file.
+    Args:
+        exp_conc_protein: expected concentrations of the standards
+        net_mfi_protein: net MFIs of the standards
+    Returns: numpy array of the curve fit coefficients
+    """
+    min_mfi = net_mfi_protein.min()
+    max_mfi = net_mfi_protein.max()
+    p0 = [min_mfi, 1, exp_conc_protein.median(), max_mfi, 1]
+    xdata = list(exp_conc_protein)
+    ydata = list(net_mfi_protein)
+    coeffs, _ = curve_fit(
+        f=logistic5p,
+        xdata=xdata,
+        ydata=ydata,
+        p0=p0,
+        sigma=ydata,
+        method="lm",
+        maxfev=int(1e5),
+        absolute_sigma=True,
+    )
+    return coeffs
+```
+
+```{python}
+def logistic5p(x: float, A: float, B: float, C: float, D: float, F: float) -> float:
+    """5-parameter logistic equation"""
+    return D + (A - D) / ((1 + (x / C) ** B) ** F)
+```
+
+
+```{python}
+def inv_logistic5p(y: float, A: float, B: float, C: float, D: float, F: float) -> float:
+    """Inverse of the 5-parameter logistic equation"""
+    return C * (((((A - D) / (y - D)) ** (1.0 / F)) - 1.0) ** (1.0 / B))
+```
+
+
+
+```{python}
+def parallel_runner(fit_df):
+    fit_df = fit_df.loc[~fit_df.isna()["net_mfi"].values]
+    mod_df = fit_df[fit_df['sample_type'] == "standard"]
+    #indexNames = sub_df[ sub_df['net_mfi'] < 0 ].index
+    #sub_df.drop(indexNames , inplace=True)
+    estimated_coefficients = curve_fit_coeffs(mod_df["standard_expected_concentration"], mod_df["net_mfi"])
+    inferred_concentrations = np.array([inv_logistic5p(net_mfi, *estimated_coefficients) for net_mfi in fit_df["net_mfi"]])
+    fit_df["inferred_concentration"] = inferred_concentrations
+    return fit_df
+```
+
+
+We also define a function that uses the average over the replicates and then fits the curve.  
+
+```{python}
+def parallel_runner_avg(fit_df):
+  fit_df = fit_df.loc[~fit_df.isna()["net_mfi"].values]
+  mod_df = fit_df[fit_df['sample_type'] == "standard"] # pick only gamma lot standard data 
+  mod_df = mod_df.groupby('xponent_id', as_index = False)['net_mfi', 'standard_expected_concentration'].agg({"net_mfi": "mean", "standard_expected_concentration" : "mean"})
+  estimated_coefficients = curve_fit_coeffs(mod_df["standard_expected_concentration"], mod_df["net_mfi"])
+  inferred_concentrations = np.array([inv_logistic5p(net_mfi, *estimated_coefficients) for net_mfi in fit_df["net_mfi"]])
+  fit_df["inferred_concentration"] = inferred_concentrations
+  return fit_df
+```
+
+
+
+Fit curve and infer data 
+
+```{python}
+n_cpu = 8
+PARALLEL = True
+```
+
+
+```{python}
+if PARALLEL:
+    result_df = Parallel(n_cpu)(delayed(parallel_runner)(fit_df) for _, fit_df in plt_fit_data.groupby(["file_name", "assay"]))
+else:
+    result_dfs = []
+    for i, (_, fit_df) in enumerate(plt_fit_data.groupby(["file_name", "assay"])):
+        result_df = parallel_runner(fit_df)
+        result_dfs.append(result_df)
+
+plt_curve = pd.concat(result_df)
+```
+
+```{python}
+if PARALLEL:
+    result_df = Parallel(n_cpu)(delayed(parallel_runner_avg)(fit_df) for _, fit_df in plt_fit_data.groupby(["file_name", "assay"]))
+else:
+    result_dfs = []
+    for i, (_, fit_df) in enumerate(plt_fit_data.groupby(["file_name", "assay"])):
+        result_df = parallel_runner(fit_df)
+        result_dfs.append(result_df)
+
+plt_curve_avg = pd.concat(result_df)
+```
+
+
+```{r}
+plt_curve <- py$plt_curve 
+plt_curve_avg <- py$plt_curve_avg
+
+plt_curve <- plt_curve %>% 
+  group_by(assay, xponent_id, file_name) %>% 
+  mutate(inferred_concentration = mean(inferred_concentration, na.rm = TRUE), 
+         net_mfi = mean(net_mfi, na.rm = TRUE)) %>% 
+  distinct(net_mfi, .keep_all = TRUE) %>% 
+  ungroup()
+
+plt_curve_avg <- plt_curve_avg %>% 
+  group_by(assay, xponent_id, file_name) %>% 
+  mutate(inferred_concentration = mean(inferred_concentration, na.rm = TRUE), 
+         net_mfi = mean(net_mfi, na.rm = TRUE)) %>% 
+  distinct(net_mfi, .keep_all = TRUE) %>% 
+  ungroup()
+```
+
+
+
+```{r}
+plt_curve %>% 
+  filter(grepl("Standard", xponent_id)) %>% 
+  skimr::skim()
+```
+
+
+Several missing inferred_concentrations for the standard 1 in gamma lot (MIF, OPN, MUC1)
+
+`net_mfi` for S1 for MUC1 gamma (and beta) is way higher than platinum standard - for the gamma lot S1 that are outside the S1 , we will assign them the S1 from the platinum standard itself since they are not in the quantiation range.  
+
+
+```{r}
+plt_curve %>% 
+  filter(is.na(inferred_concentration)) %>% 
+  filter(grepl("Standard", xponent_id)) 
+
+
+plt_curve %>% 
+  filter(assay == "MUC1") %>% 
+  filter(grepl("Std1", xponent_id) | grepl("Standard1", xponent_id)) %>% 
+  ggplot(.,aes(xponent_id, net_mfi)) + 
+  geom_jitter() + 
+  theme_bw() + 
+  labs(title = "MFI intensity MUC1 (S1)") 
+
+plt_curve %>% 
+  filter(assay == "MIF") %>% 
+  filter(grepl("Std1", xponent_id) | grepl("Standard1", xponent_id)) %>% 
+  ggplot(.,aes(xponent_id, net_mfi)) + 
+  geom_jitter() + 
+  theme_bw() + 
+  labs(title = "MFI intensity MIF (S1)") 
+
+
+plt_curve %>% 
+  filter(assay == "MUC1") %>% 
+  filter(sample_type == "standard") %>% 
+  ggplot(.,aes(net_mfi, standard_expected_concentration)) + 
+  geom_point() + 
+  #geom_smooth(se = FALSE) + 
+  facet_grid(cols = vars(file_name)) + 
+  scale_x_log10() + 
+  scale_y_log10() + 
+  theme_bw() + 
+  geom_point(data = plt_curve %>% filter(assay == "MUC1") %>% 
+               filter(grepl("Standard", xponent_id)), 
+             aes(net_mfi, standard_expected_concentration), 
+             color = "red") + 
+  labs(title = "S1 for Gamma (red) outside quantification range", 
+       subtitle = "MUC1")
+
+
+```
+
+
+
+Let's generate these plots for all gamma standards for ALL proteins 
+
+```{r}
+curve_plotting <- function(data = plt_curve, protein = "NULL") {
+  plt_curve %>% 
+  filter(assay == protein) %>% 
+  filter(sample_type == "standard") %>% 
+  ggplot(.,aes(net_mfi, standard_expected_concentration)) + 
+  geom_point() + 
+  #geom_smooth(se = FALSE) + 
+  facet_grid(cols = vars(file_name)) + 
+  scale_x_log10() + 
+  scale_y_log10() + 
+  theme_bw() + 
+  geom_point(data = plt_curve %>% filter(assay == protein) %>% 
+               filter(grepl("Standard", xponent_id)), 
+             aes(net_mfi, standard_expected_concentration), 
+             color = "red") + 
+  labs(title = "Gamma Standards in Red", 
+       subtitle = paste0(protein))
+}
+```
+
+
+```{r}
+plt_curve %>% 
+  count(assay) %>% 
+  select(assay) %>% 
+  pull() %>% 
+  map(., ~curve_plotting(data = plt_curve, protein = .x))
+```
+
+
+### Final Assignments 
+
+For the final assignments, we will take the average over all the runs (5 for panel 1 and 6 for panel 2), and for the ones that are beyond the quantitation range of S1, we simply assign them S1 (even if they are quantifiable because we are not confident in our extrapolations).  
+
+```{r}
+options(scipen = 999)
+
+gamma_assignments <- plt_curve %>% 
+  filter(grepl("Standard", xponent_id)) %>% 
+  group_by(assay, xponent_id) %>% 
+  summarise(value_assignment = mean(inferred_concentration)) %>% 
+  ungroup() %>% 
+  left_join(value_assignments) %>% 
+  mutate(
+    standard_expected_concentration = case_when(
+      grepl("Standard2", xponent_id) ~ standard_expected_concentration / 4,
+      grepl("Standard3", xponent_id) ~ standard_expected_concentration /
+        16,
+      grepl("Standard4", xponent_id) ~ standard_expected_concentration /
+        64,
+      grepl("Standard5", xponent_id) ~ standard_expected_concentration /
+        256,
+      grepl("Standard6", xponent_id) ~ standard_expected_concentration /
+        1024, 
+      is_double(standard_expected_concentration) ~ standard_expected_concentration
+    )) %>% 
+  mutate(value_assignment = ifelse(xponent_id == "Standard1" & value_assignment > standard_expected_concentration, standard_expected_concentration, 
+                                   value_assignment)) %>% 
+  mutate(value_assignment = ifelse(xponent_id == "Standard1" & is.na(value_assignment), standard_expected_concentration, 
+                                   value_assignment)) %>% 
+  rename(standard = xponent_id, 
+         platinum_assignment = standard_expected_concentration, 
+         gamma_assignment = value_assignment) %>% 
+  select(-plt_set)
+
+googlesheets4::write_sheet(gamma_assignments, ss = "https://docs.google.com/spreadsheets/d/1TKY0BRgdjQ6_Y-TSu7kG313thgaS0gpZ_lyW6WD9bS0/edit#gid=524178024", 
+                             sheet = "value_assignments")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+## Part 3 
+
+We need to generate some estimate of precision for the samples from gamma lot (for all markers - not just the 7 proteins) 
+
+
+
+We will do this for the clinical reference samples only that we are sending to RDS.  
+
+1. We subset the reference samples and the gamma standard data only 
+2. We will change the `standard_expected_concentration` to the value assignments we did in part 2. 
+3. We will proceed with fitting the curve and then retreive the `inferred_concentrations` for the reference samples.  
+
+```{r}
+data_for_precision <- raw_platinum %>% 
+  filter(grepl("Ref", xponent_id) | grepl("Standard", xponent_id))
+```
+
+Join with the gamma assignments 
+
+```{r}
+gamma_assignments <- gamma_assignments %>% rename(xponent_id = standard)
+data_for_precision %>% 
+  left_join(gamma_assignments, by = c("assay", "xponent_id")) %>% 
+  select(-standard_expected_concentration) %>% 
+  rename(standard_expected_concentration = gamma_assignment) %>% 
+  write_csv(here::here("data", "processed", "gamma-lot-qc", "data_for_precision.csv"))
+
+```
+
+```{python}
+data_for_precision = pd.read_csv('/home/ddhillon/projects/beta-av-testing/data/processed/gamma-lot-qc/data_for_precision.csv')
+```
+
+
+```{python}
+if PARALLEL:
+    result_df = Parallel(n_cpu)(delayed(parallel_runner)(fit_df) for _, fit_df in data_for_precision.groupby(["file_name", "assay"]))
+else:
+    result_dfs = []
+    for i, (_, fit_df) in enumerate(plt_fit_data.groupby(["file_name", "assay"])):
+        result_df = parallel_runner(fit_df)
+        result_dfs.append(result_df)
+
+precision_fit = pd.concat(result_df)
+```
+
+```{python}
+if PARALLEL:
+    result_df = Parallel(n_cpu)(delayed(parallel_runner_avg)(fit_df) for _, fit_df in data_for_precision.groupby(["file_name", "assay"]))
+else:
+    result_dfs = []
+    for i, (_, fit_df) in enumerate(plt_fit_data.groupby(["file_name", "assay"])):
+        result_df = parallel_runner(fit_df)
+        result_dfs.append(result_df)
+
+precision_fit_avg = pd.concat(result_df)
+```
+
+
+```{r}
+precision_fit <- py$precision_fit 
+precision_fit_avg <- py$precision_fit_avg
+```
+
+
+### Intra-CVs 
+
+We will provide intra-CVs for 
+
+1. Concentrations of the samples 
+
+```{r}
+intra_cv_ref_samples <- precision_fit %>% 
+  select(xponent_id, assay, inferred_concentration, standard_expected_concentration, file_name, 
+         pct_recovery, sample_type) %>% 
+  mutate(pct_recovery_assigned = 100*(inferred_concentration)/standard_expected_concentration) %>% 
+  filter(sample_type == "sample") %>% 
+  group_by(xponent_id, assay, file_name) %>% 
+  summarise(intra_cv = 100*sd(inferred_concentration)/mean(inferred_concentration)) %>% 
+  ungroup() %>% 
+  group_by(xponent_id, assay) %>% 
+  summarise(intra_cv = mean(intra_cv)) 
+
+inter_cv_ref_samples <- precision_fit %>% 
+  select(xponent_id, assay, inferred_concentration, standard_expected_concentration, file_name, 
+         pct_recovery, sample_type) %>% 
+  mutate(pct_recovery_assigned = 100*(inferred_concentration)/standard_expected_concentration) %>% 
+  filter(sample_type == "sample") %>% 
+  group_by(xponent_id, assay, file_name) %>% 
+  summarise(inferred_concentration = mean(inferred_concentration)) %>% 
+  ungroup() %>% 
+  group_by(xponent_id, assay) %>% 
+  summarise(assignment = mean(inferred_concentration), 
+            inter_cv = 100*sd(inferred_concentration)/mean(inferred_concentration)) %>% 
+  ungroup()
+```
+
+```{r}
+inter_cv_ref_samples %>% 
+  left_join(., intra_cv_ref_samples, by = c("xponent_id", "assay")) %>% 
+  googlesheets4::write_sheet(., ss = "https://docs.google.com/spreadsheets/d/1TKY0BRgdjQ6_Y-TSu7kG313thgaS0gpZ_lyW6WD9bS0/edit#gid=524178024", 
+                             sheet = "Reference Samples Specs")
+```
+
+2. Standards  (do we need to provide specs on standards?)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

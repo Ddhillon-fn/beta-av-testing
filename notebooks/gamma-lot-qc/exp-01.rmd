@@ -1,0 +1,221 @@
+---
+title: "Gamma Lot QC"
+author: "Dilsher Singh Dhillon"
+date: "`r format(Sys.time(),'%d %B,%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float : true 
+---
+<style>
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+    background-color: #948DFF;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r}
+library(tidyverse)
+library(plotly)
+freenome_colors <- c('#948DFF', '#1DE3FE', '#BBD532', '#FF9D42',  '#FC2E7B', 
+                   '#FECDD1')
+```
+
+
+Use these PATE functions to process the data from GCS 
+```{r eval=FALSE, echo=TRUE}
+pate-rnd xmap-collector --include_file_str QC_Gamma \
+--out_file_name gamma_qc.csv
+```
+
+Use this to import the data into JH from GCS 
+
+```{r eval=FALSE, echo=TRUE}
+gsutil cp gs://inhouse-xmap-data/user_data_frames/gamma_qc.csv
+/home/ddhillon/projects/beta-av-testing/data/raw/gamma_qc.csv
+```
+
+## Introduction 
+
+This is a one off quick check experiment to make sure everything looks ok 
+
+[benchling](https://freenome.benchling.com/freenome/f/lib_WUAAbbjQ-08-rds-gamma-lot/etr_ym83fKf2-jntmwz-rds-gamma-lot-functional-qc/edit) 
+
+
+```{r}
+raw <- readr::read_csv(here::here("data", "raw", "gamma_qc.csv"), 
+                       show_col_types = FALSE)
+```
+
+There are two runs for panel 2 - why? this is because one of the QCs for the march 3rd run was switched and Jinesh and Wilson changed the platemap and re-ran the *software* 
+
+We will only use the 7th march data since it has the correct positioning  
+
+
+```{r}
+raw %>% 
+  count(file_name)
+```
+
+
+```{r}
+## take data only for the 7 markers   
+raw <- raw %>% 
+  filter(assay %in% c("CEACAM5", "WFDC2", "FLT3L", "TNC", "IL1R2", "CXCL8", "MUC16")) %>% 
+  mutate(assay = ifelse(assay == "CXCL8", "IL-8", assay), 
+         assay = ifelse(assay == "CEACAM5", "CEA", assay), 
+         assay = ifelse(assay == "IL1R2", "IL-1 R2", assay), 
+         assay = ifelse(assay == "MUC16", "MUC-16", assay)) %>% 
+  filter(file_name != "20220303_QC_Gamma_Panel2_20220304_133848.csv")
+```
+
+
+
+
+## Analysis 
+
+### Estimate Beta using Gamma Curve 
+
+We take the curve fit by gamma, and then interpolate the beta standards and check the concentrations. We will then use these interpolated concentrations to see what the % recovery is, and whether it is within the expected interval we expect it to be.  
+
+```{r}
+## first, we import the beta historical data till february 22nd 
+beta_historical <- readr::read_csv(here::here("data", "raw", "beta-lot-stds-controls-2022-02-22.csv"), 
+                                   show_col_types = FALSE) %>% 
+  filter(assay %in% c(c("CEA", "WFDC2", "FLT3L", "TNC", "IL-1 R2", "IL-8", "MUC-16"))) %>% 
+  mutate(bead_fail = ifelse(bead_count < 35, 1, 0)) %>% 
+  filter(bead_fail == 0) %>% ## no bead failures 
+  mutate(batch = str_remove(file_name, "_[0-9]+.csv")) %>%
+  filter(!grepl("20211028_Reproducibilit_Panel2_Plate3", file_name)) %>% 
+  filter(sample_type == "standard") %>% 
+  filter(!grepl("Salt", xponent_id))
+beta_historical %>% 
+  count(xponent_id, assay)
+```
+
+```{r}
+beta_interpolated <- raw %>% 
+  filter(grepl("Beta", xponent_id)) %>% 
+  select(xponent_id, assay, calc_conc) %>% 
+  group_by(xponent_id, assay) %>% 
+  summarise(beta_conc_gamma = mean(calc_conc, na.rm = TRUE)) %>% 
+  mutate(xponent_id = case_when(grepl("Std1", xponent_id) ~ "Standard1", 
+                                grepl("Std2", xponent_id) ~ "Standard2", 
+                                grepl("Std3", xponent_id) ~ "Standard3", 
+                                grepl("Std4", xponent_id) ~ "Standard4", 
+                                grepl("Std5", xponent_id) ~ "Standard5", 
+                                grepl("Std6", xponent_id) ~ "Standard6")) %>% 
+  ungroup()
+
+beta_interpolated %>% 
+  count(xponent_id, assay)
+```
+
+Now we take the `beta_interpolated` data and merge it with our historical data  
+
+```{r}
+beta_merged <- beta_historical %>% 
+  select(xponent_id, assay, calc_conc, pct_recovery, batch, standard_expected_concentration) %>% 
+  left_join(beta_interpolated, by = c("xponent_id", "assay")) %>% 
+  mutate(beta_gamma_pct_recovery = 100*beta_conc_gamma/standard_expected_concentration)
+```
+
+```{r}
+beta_merged_intervals <- beta_merged %>% 
+  group_by(assay, xponent_id, batch) %>% 
+  mutate(pct_recovery = mean(pct_recovery, na.rm = TRUE)) %>% 
+  distinct(pct_recovery, .keep_all = TRUE) %>% 
+  #summarise(pct_recovery = mean(pct_recovery, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  filter(pct_recovery < 1000) %>% ## there are a few edge cases which we ignore  
+  group_by(xponent_id, assay) %>%
+  nest() %>% 
+  mutate(tol_df = map(data, ~ tolerance::normtol.int(.x$pct_recovery, 
+                                                     method = "EXACT", side = 2, m = 500, 
+                           log.norm = FALSE, P = 0.95))) %>% 
+   unnest(cols = tol_df) %>% 
+  janitor::clean_names() 
+```
+
+```{r}
+p1 <- beta_merged_intervals %>% 
+  unnest(cols = data) %>% 
+  mutate(panel = ifelse(assay %in% c("CEA", "TNC", "WFDC2"), "panel-2", "panel-1")) %>% 
+  rename(beta_lot_historical_average = x_bar) %>% 
+  filter(panel == "panel-1") %>% 
+  ggplot(.,aes(xponent_id, beta_lot_historical_average)) + 
+  geom_point(color = freenome_colors[4]) + 
+  geom_errorbar(aes(ymin = x2_sided_lower, ymax = x2_sided_upper), width = 0.25, color = freenome_colors[2]) + 
+  geom_point(aes(xponent_id, beta_gamma_pct_recovery), color = freenome_colors[1]) + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(title = "Estimated Beta Lot % Recovery using Gamma Curve(Purple)", 
+       subtitle = "95 % Tolerance Intervals from Beta Lot Historical Data", 
+       y = "% Recovery")
+
+p2 <- beta_merged_intervals %>% 
+  unnest(cols = data) %>% 
+  mutate(panel = ifelse(assay %in% c("CEA", "TNC", "WFDC2"), "panel-2", "panel-1")) %>% 
+  rename(beta_lot_historical_average = x_bar) %>% 
+  filter(panel == "panel-2") %>% 
+  ggplot(.,aes(xponent_id, beta_lot_historical_average)) + 
+  geom_point(color = freenome_colors[4]) + 
+  geom_errorbar(aes(ymin = x2_sided_lower, ymax = x2_sided_upper), width = 0.25, color = freenome_colors[2]) + 
+  geom_point(aes(xponent_id, beta_gamma_pct_recovery), color = freenome_colors[1]) + 
+  facet_grid(cols = vars(assay)) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(title = "Estimated Beta Lot % Recovery using Gamma Curve(Purple)", 
+       subtitle = "95 % Tolerance Intervals from Beta Lot Historical Data", 
+       y = "% Recovery")
+```
+
+```{r}
+ggplotly(p1)
+ggplotly(p2)
+```
+
+
+
+
+
+
+
+
+```
+gsutil cp /home/ddhillon/projects/beta-av-testing/notebooks/gamma-lot-qc/outputs/exp-01.html gs://freenome-user-data-ddhillon/outputs/
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
